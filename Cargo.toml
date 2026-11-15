@@ -1,0 +1,34 @@
+[package]
+name = "rust_sonar"
+version = "0.1.0"
+edition = "2024"
+description = "Per-channel audio mixer for Windows (game, chat, media, aux and an AI-cleaned mic)"
+license = "MIT"
+repository = "https://github.com/kilorito2/rust-sonar"
+
+[dependencies]
+anyhow = "1.0.104"
+axum = "0.8.9"
+# Solo OpenGL (glow): wgpu sobre Vulkan/DX12 reservaba ~220 MB más. Sin fuentes del sistema ni accesskit.
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "clipboard", "links"] }
+nnnoiseless = "0.5.2"
+parking_lot = "0.13.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "macros"] }
+windows = { version = "0.62.2", features = ["Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_System_LibraryLoader", "Win32_Media_KernelStreaming", "Win32_Media_Multimedia", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Threading", "Win32_Foundation", "Win32_Devices_FunctionDiscovery", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Variant", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Registry", "Win32_Graphics_Gdi", "Win32_Globalization"] }
+windows-core = "0.62"
+
+# El audio en debug sin optimizar (sobre todo RNNoise) no llega a tiempo real.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+
+[build-dependencies]
+winresource = "0.1.34"
+

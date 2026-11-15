@@ -1,0 +1,5 @@
+/target
+/instaladores
+/dist
+# Notas privadas de investigación (no se publican)
+/docs/analisis-interfaz.md

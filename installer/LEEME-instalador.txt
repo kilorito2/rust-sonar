@@ -1,0 +1,32 @@
+RUST SONAR - INSTALADOR DE USO PERSONAL
+========================================
+
+Este instalador pone Rust Sonar en tu PC y, si faltan, instala los
+dispositivos de audio virtuales que necesita (gratuitos, de VB-Audio):
+
+  - VB-CABLE ............ micrófono virtual (lo que oye Discord)
+  - Hi-Fi Cable ......... salida del canal Juego
+  - Voicemeeter ......... salidas de los canales Chat, Media y Aux
+
+Qué tienes que hacer:
+
+  1. Si Windows pregunta si quieres instalar el software de dispositivo
+     de "Vincent Burel" o "VB-Audio", pulsa Instalar.
+  2. Cuando se abra el instalador de Voicemeeter, pulsa "Install" y
+     después OK. (Voicemeeter no tiene instalación automática.)
+  3. Reinicia el PC al terminar. Al volver, Rust Sonar se configura solo.
+     Después puedes pulsar en Ajustes "Ordenar dispositivos de Windows"
+     para que solo se vean tus dispositivos y los de Rust Sonar.
+
+Al desinstalar, Rust Sonar deja Windows como estaba (vuelve a mostrar los
+dispositivos ocultos, les devuelve su nombre y pone tus auriculares y tu
+micro como predeterminados). Los drivers de VB-Audio se quedan; si quieres
+quitarlos, hazlo desde Configuración > Aplicaciones de Windows.
+
+IMPORTANTE - NO COMPARTIR ESTE INSTALADOR
+-----------------------------------------
+VB-CABLE, Hi-Fi Cable y Voicemeeter son donationware de Vincent Burel
+(www.vb-audio.com). Su licencia permite copiarlos tal cual, pero no
+integrarlos en el instalador de otro programa sin permiso del autor.
+Este instalador está hecho solo para el PC de su autor y no se puede
+distribuir. Si te gustan, apoya a VB-Audio: www.vb-audio.com
