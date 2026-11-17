@@ -6,16 +6,16 @@
 ; los drivers de cables virtuales de VB-Audio: VB-CABLE (micrófono virtual), Hi-Fi Cable (canal
 ; Juego) y Voicemeeter (canales Chat, Media y Aux).
 ;
-; !! USO PERSONAL !! La licencia de VB-Audio no permite integrar sus paquetes en el instalador de
-; otro programa sin su permiso. Este instalador los lleva dentro, así que NO se puede compartir ni
-; distribuir. Para repartir Rust Sonar habría que quitar la tarea "drivers" o pedir permiso a VB-Audio.
+; Los drivers NO van dentro del instalador: la licencia de VB-Audio no permite integrarlos en el de
+; otro programa. Se descargan durante la instalación de download.vb-audio.com (sus paquetes oficiales,
+; tal cual) y se comprueba su SHA-256. Así el instalador se puede distribuir.
 
 #ifndef AppVersion
   #define AppVersion "0.1.0"
 #endif
 #define AppName "Rust Sonar"
 #define AppExe "rust_sonar.exe"
-#define Drivers "..\instaladores"
+#define VbAudio "https://download.vb-audio.com/Download_CABLE/"
 
 [Setup]
 AppId={{6E0B5A43-2C1D-4C59-9C1E-5B7A3F0D8E21}
@@ -32,7 +32,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.19041
 OutputDir=..\dist
-OutputBaseFilename=RustSonar-Setup-{#AppVersion}-USO-PERSONAL
+OutputBaseFilename=RustSonar-Setup-{#AppVersion}
 SetupIconFile=..\assets\rust_sonar.ico
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
@@ -50,6 +50,8 @@ WizardImageFile=img\wizard-100.bmp,img\wizard-150.bmp,img\wizard-200.bmp
 WizardSmallImageFile=img\wizard-small-55.bmp,img\wizard-small-83.bmp,img\wizard-small-110.bmp
 Compression=lzma2/max
 SolidCompression=yes
+; Para descomprimir los .zip de VB-Audio descargados ("enhanced" solo abre .7z).
+ArchiveExtraction=full
 InfoBeforeFile=LEEME-instalador.txt
 ; El inicio automático va en HKCU del usuario que instala (el mismo que acepta el aviso de administrador).
 UsedUserAreasWarning=no
@@ -85,10 +87,11 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "..\target\release\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
-; Paquetes de VB-Audio tal cual (solo se copian a la carpeta temporal y se borran al terminar).
-Source: "{#Drivers}\VBCABLE_Driver_Pack46\*"; DestDir: "{tmp}\drivers\vbcable"; Flags: deleteafterinstall; Tasks: drivers
-Source: "{#Drivers}\HiFiCableAsioBridgeSetup_v1007\HiFiCableAsioBridgeSetup.exe"; DestDir: "{tmp}\drivers\hificable"; Flags: deleteafterinstall; Tasks: drivers
-Source: "{#Drivers}\Voicemeeter8Setup_v3130\Voicemeeter8Setup.exe"; DestDir: "{tmp}\drivers\voicemeeter"; Flags: deleteafterinstall; Tasks: drivers
+; Paquetes oficiales de VB-Audio: se descargan (solo los que falten), se comprueba su SHA-256, se
+; descomprimen en la carpeta temporal y se borran al terminar.
+Source: "{#VbAudio}VBCABLE_Driver_Pack46.zip"; DestName: "VBCABLE_Driver_Pack46.zip"; DestDir: "{tmp}\drivers\vbcable"; ExternalSize: 1324680; Hash: "bc44e8974191a5a2427d6c979e2dab08dbb09925f3f435dfa2f0ba3e45b6eb90"; Flags: external download extractarchive recursesubdirs createallsubdirs ignoreversion deleteafterinstall; Tasks: drivers; Check: DriverMissing('VBAudioVACMME')
+Source: "{#VbAudio}HiFiCableAsioBridgeSetup_v1007.zip"; DestName: "HiFiCableAsioBridgeSetup_v1007.zip"; DestDir: "{tmp}\drivers\hificable"; ExternalSize: 4006986; Hash: "3ecf204bfd8579d36bb918f9856eb1eaddd49c75146f5e8a8f59dcb8375ae89a"; Flags: external download extractarchive recursesubdirs createallsubdirs ignoreversion deleteafterinstall; Tasks: drivers; Check: DriverMissing('VBAudioHFVAIOMME')
+Source: "{#VbAudio}Voicemeeter8Setup_v3130.zip"; DestName: "Voicemeeter8Setup_v3130.zip"; DestDir: "{tmp}\drivers\voicemeeter"; ExternalSize: 73948387; Hash: "f0772b275bb6fe0d4b2a5a2fa4d25d1b5a6ee0a8ee02ba79574c9cdd85fb6fa3"; Flags: external download extractarchive recursesubdirs createallsubdirs ignoreversion deleteafterinstall; Tasks: drivers; Check: DriverMissing('VBVoicemeeterVAIOMME')
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"

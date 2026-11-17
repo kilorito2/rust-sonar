@@ -254,21 +254,24 @@ struct Driver {
     service: &'static str,
     /// Nombre del instalador de VB-Audio, tal como aparece en el registro de Inno.
     setup: &'static str,
+    /// Paquete que se descarga de vb-audio.com (también aparece en el registro de Inno).
+    download: &'static str,
     installed: bool,
 }
 
 fn detect_drivers() -> Vec<Driver> {
     [
-        ("VB-CABLE", tr!("Micrófono virtual (lo que oye Discord)", "Virtual microphone (what Discord hears)"), "VBAudioVACMME", "VBCABLE_Setup_x64.exe"),
-        ("Hi-Fi Cable", tr!("Salida del canal Juego", "Game channel output"), "VBAudioHFVAIOMME", "HiFiCableAsioBridgeSetup.exe"),
-        ("Voicemeeter", tr!("Salidas de Chat, Media y Aux", "Chat, Media and Aux outputs"), "VBVoicemeeterVAIOMME", "Voicemeeter8Setup.exe"),
+        ("VB-CABLE", tr!("Micrófono virtual (lo que oye Discord)", "Virtual microphone (what Discord hears)"), "VBAudioVACMME", "VBCABLE_Setup_x64.exe", "VBCABLE_Driver_Pack46.zip"),
+        ("Hi-Fi Cable", tr!("Salida del canal Juego", "Game channel output"), "VBAudioHFVAIOMME", "HiFiCableAsioBridgeSetup.exe", "HiFiCableAsioBridgeSetup_v1007.zip"),
+        ("Voicemeeter", tr!("Salidas de Chat, Media y Aux", "Chat, Media and Aux outputs"), "VBVoicemeeterVAIOMME", "Voicemeeter8Setup.exe", "Voicemeeter8Setup_v3130.zip"),
     ]
     .into_iter()
-    .map(|(name, purpose, service, setup)| Driver {
+    .map(|(name, purpose, service, setup, download)| Driver {
         name,
         purpose,
         service,
         setup,
+        download,
         installed: sys::key_exists(&format!("SYSTEM\\CurrentControlSet\\Services\\{service}")),
     })
     .collect()
@@ -292,6 +295,12 @@ struct Item {
     state: ItemState,
     /// Instalador de driver al que corresponde (para reconocerlo en el registro).
     setup: Option<&'static str>,
+    /// Paquete del driver en vb-audio.com (para reconocer su descarga en el registro).
+    download: Option<&'static str>,
+    /// Se está descargando (antes de copiar archivos; Inno baja los paquetes al preparar).
+    downloading: bool,
+    /// Detalle original, para volver a él al acabar la descarga.
+    base_detail: String,
 }
 
 #[derive(Default)]
@@ -308,14 +317,14 @@ const ITEM_SHORTCUTS: usize = 2;
 
 impl Progress {
     fn new(drivers: &[&Driver]) -> Self {
-        let item = |label: &str, detail: &str, setup| Item { label: label.into(), detail: detail.into(), state: ItemState::Pending, setup };
+        let item = |label: &str, detail: &str, setup, download| Item { label: label.into(), detail: detail.into(), state: ItemState::Pending, setup, download, downloading: false, base_detail: detail.into() };
         let mut items = vec![
-            item(tr!("Permisos de administrador", "Administrator rights"), tr!("Acepta el aviso de Windows", "Accept the Windows prompt"), None),
-            item(tr!("Copiando Rust Sonar", "Copying Rust Sonar"), tr!("Archivos de programa", "Program Files"), None),
-            item(tr!("Menú Inicio y desinstalador", "Start menu and uninstaller"), tr!("Accesos directos", "Shortcuts"), None),
+            item(tr!("Permisos de administrador", "Administrator rights"), tr!("Acepta el aviso de Windows", "Accept the Windows prompt"), None, None),
+            item(tr!("Copiando Rust Sonar", "Copying Rust Sonar"), tr!("Archivos de programa", "Program Files"), None, None),
+            item(tr!("Menú Inicio y desinstalador", "Start menu and uninstaller"), tr!("Accesos directos", "Shortcuts"), None, None),
         ];
         for d in drivers {
-            items.push(item(&trf!("Instalando {}", "Installing {}", d.name), d.purpose, Some(d.setup)));
+            items.push(item(&trf!("Instalando {}", "Installing {}", d.name), d.purpose, Some(d.setup), Some(d.download)));
         }
         items[ITEM_ADMIN].state = ItemState::Running;
         Self { items, ..Default::default() }
@@ -338,8 +347,29 @@ impl Progress {
         }
     }
 
+    /// Termina el paso de descarga: los drivers vuelven a "pendiente" hasta que se ejecute su instalador.
+    fn end_downloads(&mut self) {
+        for item in self.items.iter_mut().filter(|it| it.downloading) {
+            item.downloading = false;
+            item.state = ItemState::Pending;
+            item.detail = item.base_detail.clone();
+        }
+    }
+
     /// Interpreta una línea del registro de Inno Setup.
     fn on_log_line(&mut self, line: &str) {
+        if line.contains("Downloading temporary file from") {
+            self.end_downloads();
+            if let Some(item) = self.items.iter_mut().find(|it| it.download.is_some_and(|z| line.contains(z))) {
+                item.downloading = true;
+                item.state = ItemState::Running;
+                item.detail = tr!("Descargando de vb-audio.com…", "Downloading from vb-audio.com…").into();
+            }
+            return;
+        }
+        if line.contains("Dest filename:") || line.contains("Start extracting archive") {
+            self.end_downloads();
+        }
         if line.contains("Dest filename:") {
             if line.to_ascii_lowercase().ends_with(".lnk") {
                 self.start(ITEM_SHORTCUTS);
@@ -735,7 +765,7 @@ impl Setup {
                 self.go(Page::Options);
             }
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                ui.label(RichText::new(tr!("Incluye drivers de VB-Audio (donationware) · uso personal", "Includes VB-Audio drivers (donationware) · personal use")).font(regular(11.5)).color(TEXT_3));
+                ui.label(RichText::new(tr!("Descarga los drivers de VB-Audio (donationware) de vb-audio.com", "Downloads the VB-Audio drivers (donationware) from vb-audio.com")).font(regular(11.5)).color(TEXT_3));
             });
         });
     }
@@ -861,7 +891,7 @@ impl Setup {
             });
         }
 
-        if current.as_ref().is_some_and(|c| c.setup.is_some()) {
+        if current.as_ref().is_some_and(|c| c.setup.is_some() && !c.downloading) {
             ui.add_space(10.0);
             notice(ui, icons::SHIELD, ACCENT, tr!("Si Windows pregunta si quieres instalar el software de dispositivo de VB-Audio, pulsa Instalar.", "If Windows asks whether to install VB-Audio's device software, press Install."));
         }

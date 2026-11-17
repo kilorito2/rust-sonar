@@ -206,6 +206,10 @@ flowchart TB
 
 ## <a id="getting-started" href="#getting-started"><img src="assets/readme/icons/rocket.svg" width="26" height="26" align="top" alt=""></a> Getting started
 
+### Quick install
+
+Download **`RustSonar-Instalador-<version>.exe`** from the [latest release](https://github.com/kilorito2/rust-sonar/releases/latest) and run it. It installs Rust Sonar and the VB-Audio virtual cables you're missing (downloaded from vb-audio.com during setup), then asks you to restart. The steps below are for building it yourself.
+
 ### 1. Virtual devices
 
 Rust Sonar uses free, signed virtual cables from **[VB-Audio](https://vb-audio.com/Cable/)**. For the full experience (4 channels plus a virtual mic), install as administrator and restart:
@@ -240,14 +244,14 @@ The X hides the window to the tray (configurable). To quit, right-click the tray
 
 ### Building the installer (optional)
 
-`powershell -ExecutionPolicy Bypass -File installer\build.ps1` builds a signed release and a custom installer: a Rust/egui front end around Inno Setup that shows live progress, detects upgrades and can install the VB-Audio drivers. Like the app, it's in English and Spanish.
+`powershell -ExecutionPolicy Bypass -File installer\build.ps1` builds a signed release and a custom installer: a Rust/egui front end around Inno Setup that shows live progress, detects upgrades and installs the missing VB-Audio drivers. Like the app, it's in English and Spanish.
 
 <div align="center">
 <img src="assets/readme/installer.png" alt="Custom installer: options page with driver detection" width="70%">
 </div>
 
-> [!IMPORTANT]
-> The VB-Audio license does **not** allow bundling their drivers inside another program's installer without the author's permission. The drivers are not part of this repository (`instaladores/` is git-ignored), and an installer built with them is **for personal use only**. To distribute Rust Sonar, either remove the `drivers` task from `installer/RustSonar.iss` (users install the cables from vb-audio.com) or get permission from VB-Audio.
+> [!NOTE]
+> The VB-Audio license does not allow bundling their drivers inside another program's installer, so the installer doesn't carry them: it downloads the official packages from `download.vb-audio.com` during setup (only the missing ones) and checks their SHA-256 before running them. That's why it needs an Internet connection, and why it can be shared.
 
 ---
 
