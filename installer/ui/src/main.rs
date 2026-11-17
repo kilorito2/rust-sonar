@@ -261,20 +261,36 @@ struct Driver {
 
 fn detect_drivers() -> Vec<Driver> {
     [
-        ("VB-CABLE", tr!("Micrófono virtual (lo que oye Discord)", "Virtual microphone (what Discord hears)"), "VBAudioVACMME", "VBCABLE_Setup_x64.exe", "VBCABLE_Driver_Pack46.zip"),
-        ("Hi-Fi Cable", tr!("Salida del canal Juego", "Game channel output"), "VBAudioHFVAIOMME", "HiFiCableAsioBridgeSetup.exe", "HiFiCableAsioBridgeSetup_v1007.zip"),
-        ("Voicemeeter", tr!("Salidas de Chat, Media y Aux", "Chat, Media and Aux outputs"), "VBVoicemeeterVAIOMME", "Voicemeeter8Setup.exe", "Voicemeeter8Setup_v3130.zip"),
+        ("VB-CABLE", tr!("Micrófono virtual (lo que oye Discord)", "Virtual microphone (what Discord hears)"), "VBAudioVACMME", "vbmmecable64", "VBCABLE_Setup_x64.exe", "VBCABLE_Driver_Pack46.zip"),
+        ("Hi-Fi Cable", tr!("Salida del canal Juego", "Game channel output"), "VBAudioHFVAIOMME", "vbhfvaio64", "HiFiCableAsioBridgeSetup.exe", "HiFiCableAsioBridgeSetup_v1007.zip"),
+        ("Voicemeeter", tr!("Salidas de Chat, Media y Aux", "Chat, Media and Aux outputs"), "VBVoicemeeterVAIOMME", "vbvoicemeetervaio64", "Voicemeeter8Setup.exe", "Voicemeeter8Setup_v3130.zip"),
     ]
     .into_iter()
-    .map(|(name, purpose, service, setup, download)| Driver {
+    .map(|(name, purpose, service, package, setup, download)| Driver {
         name,
         purpose,
         service,
         setup,
         download,
-        installed: sys::key_exists(&format!("SYSTEM\\CurrentControlSet\\Services\\{service}")),
+        installed: driver_installed(service, package),
     })
     .collect()
+}
+
+/// Un driver está instalado si tiene su servicio en el registro Y su paquete en el almacén de drivers
+/// de Windows. Solo con el servicio no basta: al borrar los drivers a mano (pnputil, el desinstalador
+/// de VB-Audio) la clave del servicio se queda huérfana y parecería instalado sin estarlo.
+fn driver_installed(service: &str, package_prefix: &str) -> bool {
+    sys::key_exists(&format!("SYSTEM\\CurrentControlSet\\Services\\{service}")) && in_driver_store(package_prefix)
+}
+
+/// ¿Hay en `%SystemRoot%\System32\DriverStore\FileRepository` una carpeta que empiece por `prefix`?
+fn in_driver_store(prefix: &str) -> bool {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let repo = std::path::Path::new(&root).join("System32").join("DriverStore").join("FileRepository");
+    std::fs::read_dir(repo)
+        .map(|dir| dir.flatten().any(|e| e.file_name().to_string_lossy().to_ascii_lowercase().starts_with(prefix)))
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -828,6 +844,12 @@ impl Setup {
             ui.label(RichText::new(tr!("Carpeta", "Folder")).font(medium(13.5)).color(TEXT_2));
             ui.add(egui::TextEdit::singleline(&mut self.dir).desired_width(ui.available_width()).margin(vec2(10.0, 7.0)).font(regular(13.5)));
         });
+        // Si se borra la carpeta, al salir del campo vuelve la de siempre (si no, «Instalar» se queda
+        // desactivado sin que se vea por qué).
+        if self.dir.trim().is_empty() && !ui.ctx().memory(|m| m.focused().is_some()) {
+            let base = std::env::var("ProgramW6432").or_else(|_| std::env::var("ProgramFiles")).unwrap_or_else(|_| r"C:\Program Files".into());
+            self.dir = format!(r"{base}\Rust Sonar");
+        }
 
         footer(ui, |ui| {
             let label = if self.upgrade { tr!("Actualizar", "Update") } else { tr!("Instalar", "Install") };
@@ -1224,4 +1246,14 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native("Instalar Rust Sonar", options, Box::new(|cc| Ok(Box::new(Setup::new(cc)))))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn driver_store_is_readable_and_prefixes_match() {
+        // Prefijo vacío: cualquier carpeta vale, así que solo comprueba que el almacén se puede leer.
+        assert!(super::in_driver_store(""));
+        assert!(!super::in_driver_store("rust-sonar-no-existe"));
+    }
 }

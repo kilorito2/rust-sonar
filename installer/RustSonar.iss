@@ -11,7 +11,7 @@
 ; tal cual) y se comprueba su SHA-256. Así el instalador se puede distribuir.
 
 #ifndef AppVersion
-  #define AppVersion "0.2.0"
+  #define AppVersion "0.2.1"
 #endif
 #define AppName "Rust Sonar"
 #define AppExe "rust_sonar.exe"
@@ -91,9 +91,9 @@ Source: "..\target\release\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 ; Paquetes oficiales de VB-Audio: se descargan (solo los que falten), se comprueba su SHA-256, se
 ; descomprimen en la carpeta temporal y se borran al terminar.
-Source: "{#VbAudio}VBCABLE_Driver_Pack46.zip"; DestName: "VBCABLE_Driver_Pack46.zip"; DestDir: "{tmp}\drivers\vbcable"; ExternalSize: 1324680; Hash: "bc44e8974191a5a2427d6c979e2dab08dbb09925f3f435dfa2f0ba3e45b6eb90"; Flags: external download extractarchive recursesubdirs createallsubdirs ignoreversion deleteafterinstall; Tasks: drivers; Check: DriverMissing('VBAudioVACMME')
-Source: "{#VbAudio}HiFiCableAsioBridgeSetup_v1007.zip"; DestName: "HiFiCableAsioBridgeSetup_v1007.zip"; DestDir: "{tmp}\drivers\hificable"; ExternalSize: 4006986; Hash: "3ecf204bfd8579d36bb918f9856eb1eaddd49c75146f5e8a8f59dcb8375ae89a"; Flags: external download extractarchive recursesubdirs createallsubdirs ignoreversion deleteafterinstall; Tasks: drivers; Check: DriverMissing('VBAudioHFVAIOMME')
-Source: "{#VbAudio}Voicemeeter8Setup_v3130.zip"; DestName: "Voicemeeter8Setup_v3130.zip"; DestDir: "{tmp}\drivers\voicemeeter"; ExternalSize: 73948387; Hash: "f0772b275bb6fe0d4b2a5a2fa4d25d1b5a6ee0a8ee02ba79574c9cdd85fb6fa3"; Flags: external download extractarchive recursesubdirs createallsubdirs ignoreversion deleteafterinstall; Tasks: drivers; Check: DriverMissing('VBVoicemeeterVAIOMME')
+Source: "{#VbAudio}VBCABLE_Driver_Pack46.zip"; DestName: "VBCABLE_Driver_Pack46.zip"; DestDir: "{tmp}\drivers\vbcable"; ExternalSize: 1324680; Hash: "bc44e8974191a5a2427d6c979e2dab08dbb09925f3f435dfa2f0ba3e45b6eb90"; Flags: external download extractarchive recursesubdirs createallsubdirs ignoreversion deleteafterinstall; Tasks: drivers; Check: DriverMissing('VBAudioVACMME', 'vbmmecable64')
+Source: "{#VbAudio}HiFiCableAsioBridgeSetup_v1007.zip"; DestName: "HiFiCableAsioBridgeSetup_v1007.zip"; DestDir: "{tmp}\drivers\hificable"; ExternalSize: 4006986; Hash: "3ecf204bfd8579d36bb918f9856eb1eaddd49c75146f5e8a8f59dcb8375ae89a"; Flags: external download extractarchive recursesubdirs createallsubdirs ignoreversion deleteafterinstall; Tasks: drivers; Check: DriverMissing('VBAudioHFVAIOMME', 'vbhfvaio64')
+Source: "{#VbAudio}Voicemeeter8Setup_v3130.zip"; DestName: "Voicemeeter8Setup_v3130.zip"; DestDir: "{tmp}\drivers\voicemeeter"; ExternalSize: 73948387; Hash: "f0772b275bb6fe0d4b2a5a2fa4d25d1b5a6ee0a8ee02ba79574c9cdd85fb6fa3"; Flags: external download extractarchive recursesubdirs createallsubdirs ignoreversion deleteafterinstall; Tasks: drivers; Check: DriverMissing('VBVoicemeeterVAIOMME', 'vbvoicemeetervaio64')
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"
@@ -107,9 +107,9 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 [Run]
 ; -i -h = instalación silenciosa de los instaladores de VB-Audio. Windows puede preguntar igualmente
 ; si confías en el driver: hay que aceptar. Voicemeeter no tiene modo silencioso: se abre su ventana.
-Filename: "{tmp}\drivers\vbcable\VBCABLE_Setup_x64.exe"; Parameters: "-i -h"; WorkingDir: "{tmp}\drivers\vbcable"; StatusMsg: "{cm:StatusCable}"; Flags: waituntilterminated; Tasks: drivers; Check: DriverMissing('VBAudioVACMME'); AfterInstall: DriverInstalled
-Filename: "{tmp}\drivers\hificable\HiFiCableAsioBridgeSetup.exe"; Parameters: "-i -h"; WorkingDir: "{tmp}\drivers\hificable"; StatusMsg: "{cm:StatusHifi}"; Flags: waituntilterminated; Tasks: drivers; Check: DriverMissing('VBAudioHFVAIOMME'); AfterInstall: DriverInstalled
-Filename: "{tmp}\drivers\voicemeeter\Voicemeeter8Setup.exe"; WorkingDir: "{tmp}\drivers\voicemeeter"; StatusMsg: "{cm:StatusVm}"; Flags: waituntilterminated; Tasks: drivers; Check: DriverMissing('VBVoicemeeterVAIOMME'); AfterInstall: DriverInstalled
+Filename: "{tmp}\drivers\vbcable\VBCABLE_Setup_x64.exe"; Parameters: "-i -h"; WorkingDir: "{tmp}\drivers\vbcable"; StatusMsg: "{cm:StatusCable}"; Flags: waituntilterminated; Tasks: drivers; Check: DriverMissing('VBAudioVACMME', 'vbmmecable64'); AfterInstall: DriverInstalled
+Filename: "{tmp}\drivers\hificable\HiFiCableAsioBridgeSetup.exe"; Parameters: "-i -h"; WorkingDir: "{tmp}\drivers\hificable"; StatusMsg: "{cm:StatusHifi}"; Flags: waituntilterminated; Tasks: drivers; Check: DriverMissing('VBAudioHFVAIOMME', 'vbhfvaio64'); AfterInstall: DriverInstalled
+Filename: "{tmp}\drivers\voicemeeter\Voicemeeter8Setup.exe"; WorkingDir: "{tmp}\drivers\voicemeeter"; StatusMsg: "{cm:StatusVm}"; Flags: waituntilterminated; Tasks: drivers; Check: DriverMissing('VBVoicemeeterVAIOMME', 'vbvoicemeetervaio64'); AfterInstall: DriverInstalled
 ; Con los cables ya activos (sin drivers nuevos), se configura y ordena aquí mismo, aprovechando que el
 ; instalador ya es administrador: Windows se queda solo con «Rust Sonar - Juego», «- Chat»… y sin
 ; preguntar nada. Con drivers recién instalados hay que reiniciar antes; lo hará la app en su primer
@@ -127,10 +127,18 @@ Filename: "{app}\{#AppExe}"; Parameters: "--uninstall-cleanup"; Flags: waituntil
 var
   DriversInstalled: Boolean;
 
-{ ¿Falta el driver? Se mira su servicio de Windows. }
-function DriverMissing(Service: String): Boolean;
+{ ¿Falta el driver? Hace falta su servicio de Windows Y su paquete en el almacén de drivers: al borrar
+  los drivers a mano la clave del servicio se queda huérfana y parecería instalado sin estarlo.
+  sysnative: el instalador es de 32 bits y sys apuntaría a SysWOW64, donde no está el almacén. }
+function DriverMissing(Service, Package: String): Boolean;
+var
+  FindRec: TFindRec;
+  InStore: Boolean;
 begin
-  Result := not RegKeyExists(HKLM, 'SYSTEM\CurrentControlSet\Services\' + Service);
+  InStore := FindFirst(ExpandConstant('{sysnative}\DriverStore\FileRepository\') + Package + '*', FindRec);
+  if InStore then
+    FindClose(FindRec);
+  Result := not (RegKeyExists(HKLM, 'SYSTEM\CurrentControlSet\Services\' + Service) and InStore);
 end;
 
 procedure DriverInstalled();

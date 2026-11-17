@@ -77,6 +77,12 @@ fn run_engine(start_hidden: bool) {
         if let Err(e) = virtual_devices::first_run_setup(&first) {
             eprintln!("[configuración inicial] {e:#}");
         }
+        // Si la primera configuración se quedó a medias (faltaba algún cable), se completa ahora.
+        match virtual_devices::complete_setup(&first) {
+            Ok(Some(msg)) => println!("[configuración inicial] {msg}"),
+            Ok(None) => {}
+            Err(e) => eprintln!("[configuración inicial] {e:#}"),
+        }
         // Y, una sola vez, que en Windows queden solo los dispositivos de Rust Sonar.
         virtual_devices::tidy_once(&first);
     });

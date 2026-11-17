@@ -771,6 +771,9 @@ pub struct Settings {
     pub streamer: StreamerSettings,
     /// Ya se ordenaron solos los dispositivos de Windows tras la primera configuración (se hace una vez).
     pub devices_tidied: bool,
+    /// Alguna vez estuvieron asignadas las cinco funciones (4 canales y micro). Hasta entonces, la
+    /// configuración se va completando sola con los cables que aparezcan.
+    pub setup_complete: bool,
 }
 
 pub const DEFAULT_IGNORED: [&str; 4] = ["audiodg", "steelseriessonar", "steelseriesgg", "rust_sonar"];
@@ -803,6 +806,7 @@ impl Default for Settings {
             overlay: OverlaySettings::default(),
             streamer: StreamerSettings::default(),
             devices_tidied: false,
+            setup_complete: false,
         }
     }
 }

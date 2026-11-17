@@ -1,6 +1,6 @@
 [package]
 name = "rust_sonar"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Per-channel audio mixer for Windows (game, chat, media, aux and an AI-cleaned mic)"
 license = "MIT"

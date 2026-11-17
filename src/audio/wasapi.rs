@@ -153,8 +153,17 @@ fn device_name(dev: &IMMDevice) -> Result<String> {
 }
 
 pub fn list_devices(flow: EDataFlow) -> Result<Vec<DeviceInfo>> {
+    list_devices_in(flow, DEVICE_STATE_ACTIVE)
+}
+
+/// Dispositivos desactivados en Windows (entre ellos, los que oculta «Ordenar dispositivos»).
+pub fn list_disabled_devices(flow: EDataFlow) -> Result<Vec<DeviceInfo>> {
+    list_devices_in(flow, DEVICE_STATE_DISABLED)
+}
+
+fn list_devices_in(flow: EDataFlow, state: DEVICE_STATE) -> Result<Vec<DeviceInfo>> {
     unsafe {
-        let coll = enumerator()?.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE)?;
+        let coll = enumerator()?.EnumAudioEndpoints(flow, state)?;
         let mut out = Vec::new();
         for i in 0..coll.GetCount()? {
             let dev = coll.Item(i)?;

@@ -337,6 +337,94 @@ mod tests {
         assert_eq!(get_app_output(pid).unwrap(), None);
     }
 
+    /// Diagnóstico (solo lee): por cada app que suena, en qué dispositivo está de verdad y qué salida
+    /// tiene pedida en Windows. `cargo test --release -- --ignored probe_app_routing --nocapture`
+    #[test]
+    #[ignore]
+    fn probe_app_routing() {
+        use crate::audio::wasapi;
+        let _com = wasapi::ComGuard::init();
+        let outs = wasapi::list_devices(eRender).unwrap();
+        let name = |id: &str| outs.iter().find(|d| d.id == id).map(|d| d.name.clone()).unwrap_or_else(|| format!("? {id}"));
+        for p in wasapi::list_session_processes().unwrap() {
+            let wanted = match get_app_output(p.pid) {
+                Ok(Some(id)) => name(&id),
+                Ok(None) => "(predeterminado)".into(),
+                Err(e) => format!("ERROR {e:#}"),
+            };
+            let on: Vec<String> = p.devices.iter().map(|id| name(id)).collect();
+            println!("APP {} pid {} pico {:.3} | pedida: {wanted} | suena en: {on:?}", p.name, p.pid, p.peak);
+        }
+    }
+
+    /// ¿Respeta Windows la salida por aplicación? Sobre el propio proceso de test: pide cada salida
+    /// virtual, mira cuál pasa a ser SU predeterminada y dónde acaba sonando un tono abierto en «la
+    /// predeterminada». Al final quita la preferencia.
+    /// `cargo test --release -- --ignored probe_own_routing --nocapture`
+    #[test]
+    #[ignore]
+    fn probe_own_routing() {
+        use crate::audio::wasapi::{self, CaptureStream, RenderStream};
+        let _com = wasapi::ComGuard::init();
+        let pid = std::process::id();
+        let outs = wasapi::list_devices(eRender).unwrap();
+        let name = |id: &str| outs.iter().find(|d| d.id == id).map(|d| d.name.clone()).unwrap_or_else(|| format!("? {id}"));
+        println!("ANTES predeterminada del proceso: {}", wasapi::default_device_id(eRender, eConsole).map(|i| name(&i)).unwrap_or_default());
+        for target in outs.iter().filter(|d| d.name.contains("Rust Sonar - ") && !d.name.contains("micro") && !d.name.contains("Mic")) {
+            set_app_output(pid, Some(&target.id)).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let def = wasapi::default_device_id(eRender, eConsole).unwrap_or_default();
+            // Tono en «la predeterminada» y escucha en el cable pedido.
+            let (tdev, _, _) = wasapi::get_device(Some(&target.id), eRender).unwrap();
+            let mut cap = CaptureStream::loopback(&tdev).unwrap();
+            let (ddev, _, _) = wasapi::get_device(None, eRender).unwrap();
+            let mut out = RenderStream::open(&ddev, 2).unwrap();
+            let (mut scratch, mut phase, mut pk) = (Vec::new(), 0.0f32, 0.0f32);
+            for i in 0..60 {
+                out.write(50, |o| {
+                    for f in o.chunks_exact_mut(2) {
+                        let v = phase.sin() * 0.01;
+                        phase += 2.0 * std::f32::consts::PI * 440.0 / 48000.0;
+                        f[0] = v;
+                        f[1] = v;
+                    }
+                })
+                .unwrap();
+                cap.read(5, &mut scratch, |s| {
+                    if i > 20 {
+                        pk = pk.max(crate::dsp::peak(s));
+                    }
+                })
+                .unwrap();
+            }
+            println!("PEDIDA {} | predeterminada del proceso: {} | tono que llega al cable pedido: {pk:.5}", target.name, name(&def));
+        }
+        set_app_output(pid, None).unwrap();
+    }
+
+    /// Simula que Windows cambia los predeterminados por su cuenta: pone la primera salida y la primera
+    /// entrada REALES como predeterminadas y, a los 4 s, dice cuáles lo son. Con Rust Sonar abierto y
+    /// «Gestionar los predeterminados» activado, deben haber vuelto a ser las suyas.
+    /// `cargo test --release -- --ignored probe_defaults_are_restored --nocapture`
+    #[test]
+    #[ignore]
+    fn probe_defaults_are_restored() {
+        use crate::audio::wasapi;
+        use windows::Win32::Media::Audio::eCapture;
+        let _com = wasapi::ComGuard::init();
+        for (label, flow) in [("salida", eRender), ("entrada", eCapture)] {
+            let devices = wasapi::list_devices(flow).unwrap();
+            let name = |id: &str| devices.iter().find(|d| d.id == id).map(|d| d.name.clone()).unwrap_or_default();
+            let before = wasapi::default_device_id(flow, eConsole).unwrap_or_default();
+            let real = devices.iter().find(|d| !crate::virtual_devices::is_virtual_cable(&d.name)).expect("un dispositivo real");
+            set_default_device(&real.id, &ALL_ROLES).unwrap();
+            let forced = wasapi::default_device_id(flow, eConsole).unwrap_or_default();
+            std::thread::sleep(std::time::Duration::from_secs(4));
+            let after = wasapi::default_device_id(flow, eConsole).unwrap_or_default();
+            println!("DEFAULT {label}: antes «{}» | forzada «{}» | 4 s después «{}»", name(&before), name(&forced), name(&after));
+        }
+    }
+
     /// Vuelve a poner como predeterminado el dispositivo que ya lo es (no cambia nada).
     #[test]
     #[ignore]

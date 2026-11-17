@@ -113,6 +113,12 @@ fn interface_name(name: &str) -> Option<&str> {
 /// Propone un dispositivo para cada función. Primero los que están hechos para esa función
 /// ("… - Gaming", "Rust Sonar - Chat"…) y luego reparte el resto de cables en orden.
 pub fn auto_assign(outputs: &[DeviceInfo]) -> Vec<(Role, Option<String>)> {
+    assign_missing(outputs, &Role::ALL.map(|r| (r, None)))
+}
+
+/// Como `auto_assign`, pero respetando lo que ya está asignado en `current`: solo rellena las
+/// funciones que estén vacías con los cables que queden libres.
+pub fn assign_missing(outputs: &[DeviceInfo], current: &[(Role, Option<String>)]) -> Vec<(Role, Option<String>)> {
     let mut cables: Vec<&DeviceInfo> = outputs.iter().filter(|d| is_virtual_cable(&d.name)).collect();
     // VB-CABLE trae dos entradas del MISMO cable ("CABLE Input" y "CABLE In 16ch"): las dos salen
     // por "CABLE Output". Si una fuera el micro y la otra un canal, el canal sonaría en el micro.
@@ -128,10 +134,10 @@ pub fn auto_assign(outputs: &[DeviceInfo]) -> Vec<(Role, Option<String>)> {
     cables.retain(|d| !twins.contains(&d.id));
     cables.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let mut result: Vec<(Role, Option<String>)> = Role::ALL.iter().map(|&r| (r, None)).collect();
-    let mut used: Vec<String> = Vec::new();
+    let mut result: Vec<(Role, Option<String>)> = current.to_vec();
+    let mut used: Vec<String> = current.iter().filter_map(|(_, id)| id.clone()).collect();
 
-    for (role, slot) in result.iter_mut() {
+    for (role, slot) in result.iter_mut().filter(|(_, slot)| slot.is_none()) {
         let found = role.keywords().iter().find_map(|k| {
             cables.iter().find(|d| !used.contains(&d.id) && d.name.to_lowercase().contains(k))
         });
@@ -436,6 +442,101 @@ pub fn first_run_setup(shared: &crate::state::Shared) -> anyhow::Result<Option<S
     Ok(Some(summary))
 }
 
+/// Completa una configuración que se quedó a medias. Pasa cuando la primera configuración se hizo
+/// sin todos los cables (un driver que falló o que aún no estaba activo): algún canal se quedó sin
+/// dispositivo y, como la configuración automática solo se hace una vez, no se arreglaba nunca.
+/// También cuando un dispositivo asignado ya no existe (drivers reinstalados: cambian de ID).
+/// Rellena solo las funciones vacías, con los cables libres; si alguno lo habíamos ocultado al
+/// ordenar, lo vuelve a mostrar. Quien deja una función sin asignar a propósito, con todo ya
+/// configurado alguna vez, no se ve afectado.
+pub fn complete_setup(shared: &crate::state::Shared) -> anyhow::Result<Option<String>> {
+    use crate::audio::{routing::DeviceChange, wasapi};
+    use windows::Win32::Media::Audio::{eCapture, eRender};
+    let s = shared.snapshot();
+    if !s.auto_setup_done {
+        return Ok(None); // aún no se ha hecho la primera configuración
+    }
+    let outputs = wasapi::list_devices(eRender)?;
+    let inputs = wasapi::list_devices(eCapture)?;
+    // Lo asignado que ya no existe cuenta como vacío.
+    let current: Vec<(Role, Option<String>)> =
+        Role::ALL.iter().map(|&r| (r, r.get(&s).filter(|id| outputs.iter().any(|d| &d.id == id)))).collect();
+    let stale = Role::ALL.iter().any(|r| r.get(&s).is_some_and(|id| !outputs.iter().any(|d| d.id == id)));
+    if current.iter().all(|(_, id)| id.is_some()) {
+        if !s.setup_complete {
+            shared.update(|s| s.setup_complete = true);
+        }
+        return Ok(None);
+    }
+    if s.setup_complete && !stale {
+        return Ok(None); // estuvo completa: lo vacío es decisión del usuario
+    }
+
+    // Cables disponibles: los visibles y los que ocultamos nosotros al ordenar.
+    let ours = |list: Vec<DeviceInfo>| -> Vec<DeviceInfo> { list.into_iter().filter(|d| s.hidden_devices.contains(&d.id)).collect() };
+    let hidden_out = ours(wasapi::list_disabled_devices(eRender).unwrap_or_default());
+    let hidden_in = ours(wasapi::list_disabled_devices(eCapture).unwrap_or_default());
+    let mut pool = outputs.clone();
+    pool.extend(hidden_out.iter().cloned());
+    pool.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut all_inputs = inputs.clone();
+    all_inputs.extend(hidden_in.iter().cloned());
+
+    let plan = assign_missing(&pool, &current);
+    let new: Vec<(Role, String)> =
+        plan.iter().zip(&current).filter(|(_, (_, before))| before.is_none()).filter_map(|((role, id), _)| id.clone().map(|id| (*role, id))).collect();
+    if new.is_empty() {
+        return Ok(None); // sigue faltando el cable: se volverá a intentar en el próximo arranque
+    }
+
+    // Configuración resultante (también quita lo que ya no existe).
+    let mut next = s.clone();
+    for (role, id) in &plan {
+        role.set(&mut next, id.clone());
+    }
+    let mic_is_new = new.iter().any(|(role, _)| *role == Role::Mic);
+    if mic_is_new {
+        if next.mic.input_device.as_ref().is_none_or(|id| !inputs.iter().any(|d| &d.id == id)) {
+            next.mic.input_device = pick_real(&inputs, &[], None);
+        }
+        next.mic.enabled = next.mic.input_device.is_some();
+    }
+
+    // En Windows: mostrar los que estaban ocultos (y la entrada del cable del micro) y, si ya se
+    // ordenó alguna vez, ponerles su nombre. Sin ordenar todavía, lo hará `tidy_once`.
+    let mut new_ids: Vec<String> = new.iter().map(|(_, id)| id.clone()).collect();
+    if mic_is_new {
+        new_ids.extend(virtual_mic_input(&next, &pool, &all_inputs));
+    }
+    let show: Vec<String> = hidden_out.iter().chain(&hidden_in).map(|d| d.id.clone()).filter(|id| new_ids.contains(id)).collect();
+    let renames: Vec<(String, String)> =
+        if s.devices_tidied || !show.is_empty() { rename_plan(&next, &pool, &all_inputs).into_iter().filter(|(id, _)| new_ids.contains(id)).collect() } else { Vec::new() };
+    let mut changes: Vec<DeviceChange> = show.iter().cloned().map(DeviceChange::Show).collect();
+    changes.extend(renames.iter().map(|(id, name)| DeviceChange::Rename { id: id.clone(), name: name.clone() }));
+    crate::audio::routing::apply_device_changes(&changes)?;
+
+    for (id, _) in &renames {
+        if let Some(name) = pool.iter().chain(&all_inputs).find(|d| &d.id == id).and_then(|d| original_name(&d.name)) {
+            next.renamed_devices.entry(id.clone()).or_insert(name);
+        }
+    }
+    next.hidden_devices.retain(|id| !show.contains(id));
+    next.setup_complete = Role::ALL.iter().all(|r| r.get(&next).is_some());
+    let names: Vec<&str> = new.iter().map(|(role, _)| role.label()).collect();
+    shared.update(|cfg| {
+        // Solo lo que toca esta función: lo demás puede haber cambiado mientras tanto.
+        for role in Role::ALL {
+            role.set(cfg, role.get(&next));
+        }
+        cfg.mic.input_device = next.mic.input_device.clone();
+        cfg.mic.enabled = next.mic.enabled;
+        cfg.renamed_devices = next.renamed_devices.clone();
+        cfg.hidden_devices = next.hidden_devices.clone();
+        cfg.setup_complete = next.setup_complete;
+    });
+    Ok(Some(trf!("Configuración completada: {}.", "Setup completed: {}.", names.join(", "))))
+}
+
 /// Recién configurado, Windows enseña todos los dispositivos de VB-Audio (Voicemeeter solo trae
 /// docenas) y no se sabe cuáles son los buenos. Una sola vez, nada más configurarse, se ordenan solos:
 /// los de Rust Sonar con su nombre y el resto ocultos. Necesita administrador: si no lo somos, sale
@@ -466,6 +567,11 @@ pub fn setup_devices_cli() -> i32 {
         Ok(summary) => {
             if let Some(summary) = summary {
                 println!("[configuración inicial] {summary}");
+            }
+            match complete_setup(&shared) {
+                Ok(Some(msg)) => println!("[configuración inicial] {msg}"),
+                Ok(None) => {}
+                Err(e) => eprintln!("[configuración inicial] {e:#}"),
             }
             tidy_once(&shared);
             0
@@ -696,6 +802,52 @@ mod tests {
 #[cfg(test)]
 mod stream_tests {
     use super::*;
+
+    fn d(id: &str, name: &str) -> DeviceInfo {
+        DeviceInfo { id: id.into(), name: name.into() }
+    }
+
+    /// El caso real: al configurarse faltaba Hi-Fi Cable y solo había tres cables de canal.
+    #[test]
+    fn missing_channel_is_filled_when_its_cable_shows_up() {
+        let first = vec![
+            d("hs", "Altavoces (Headset)"),
+            d("cable", "CABLE Input (VB-Audio Virtual Cable)"),
+            d("vm-aux", "Voicemeeter AUX Input (VB-Audio Voicemeeter VAIO)"),
+            d("vm-in", "Voicemeeter Input (VB-Audio Voicemeeter VAIO)"),
+        ];
+        let plan = auto_assign(&first);
+        let get = |plan: &[(Role, Option<String>)], role: Role| plan.iter().find(|(r, _)| *r == role).unwrap().1.clone();
+        assert_eq!(get(&plan, Role::Mic).as_deref(), Some("cable"));
+        assert!(get(&plan, Role::Channel(Channel::Game)).is_some());
+        assert!(get(&plan, Role::Channel(Channel::Chat)).is_some());
+        assert_eq!(get(&plan, Role::Channel(Channel::Media)), None);
+        assert_eq!(get(&plan, Role::Channel(Channel::Aux)), None);
+
+        // Aparecen más cables (driver instalado después, o reinicio): se rellena lo vacío sin tocar lo demás.
+        let mut later = first.clone();
+        later.push(d("hifi", "Hi-Fi Cable Input (VB-Audio Hi-Fi Cable)"));
+        later.push(d("vm-1", "Voicemeeter In 1 (VB-Audio Voicemeeter VAIO)"));
+        let done = assign_missing(&later, &plan);
+        for role in Role::ALL {
+            assert!(get(&done, role).is_some(), "{role:?} sin dispositivo");
+            if let Some(before) = get(&plan, role) {
+                assert_eq!(get(&done, role), Some(before), "{role:?} no debía cambiar");
+            }
+        }
+        // Ningún cable en dos funciones.
+        let mut ids: Vec<String> = done.iter().filter_map(|(_, id)| id.clone()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 5);
+    }
+
+    #[test]
+    fn nothing_to_fill_without_free_cables() {
+        let outs = vec![d("hs", "Altavoces (Headset)"), d("cable", "CABLE Input (VB-Audio Virtual Cable)")];
+        let plan = auto_assign(&outs);
+        assert_eq!(assign_missing(&outs, &plan), plan);
+    }
 
     #[test]
     fn hide_plan_keeps_the_stream_cable_pair_for_obs() {

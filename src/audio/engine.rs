@@ -117,25 +117,39 @@ fn wanted_defaults(s: &Settings, devices: &Devices) -> Defaults {
     Defaults { render, communications, capture }
 }
 
-fn apply_defaults(want: &Defaults, applied: &mut Defaults) {
-    if want.render != applied.render {
+/// Pone en Windows los predeterminados que queremos. Normalmente solo cuando cambia lo que queremos;
+/// con `verify` (Windows ha avisado de un cambio de dispositivos) mira además cómo están de verdad,
+/// porque Windows los cambia por su cuenta (al enchufar unos auriculares USB, p. ej.) y entonces las
+/// apps sonarían fuera del mezclador, o Discord cogería el micro sin procesar.
+/// Devuelve true si ha tenido que corregir alguno que Windows había cambiado.
+fn apply_defaults(want: &Defaults, applied: &mut Defaults, verify: bool) -> bool {
+    let drifted = |id: &Option<String>, flow, role| verify && id.is_some() && wasapi::default_device_id(flow, role) != *id;
+    let mut corrected = false;
+    let render_drift = drifted(&want.render, eRender, eConsole) || drifted(&want.render, eRender, eMultimedia);
+    if want.render != applied.render || render_drift {
         if let Some(id) = &want.render {
             let _ = routing::set_default_device(id, &[eConsole, eMultimedia]);
         }
+        corrected |= want.render == applied.render;
         applied.render = want.render.clone();
     }
-    if want.communications != applied.communications {
+    let comm_drift = drifted(&want.communications, eRender, eCommunications);
+    if want.communications != applied.communications || comm_drift {
         if let Some(id) = &want.communications {
             let _ = routing::set_default_device(id, &[eCommunications]);
         }
+        corrected |= want.communications == applied.communications;
         applied.communications = want.communications.clone();
     }
-    if want.capture != applied.capture {
+    let capture_drift = routing::ALL_ROLES.iter().any(|&role| drifted(&want.capture, eCapture, role));
+    if want.capture != applied.capture || capture_drift {
         if let Some(id) = &want.capture {
             let _ = routing::set_default_device(id, &routing::ALL_ROLES);
         }
+        corrected |= want.capture == applied.capture;
         applied.capture = want.capture.clone();
     }
+    corrected
 }
 
 /// Con el micro virtual apagado nadie escribe en su cable: si Windows lo sigue teniendo como
@@ -215,6 +229,8 @@ fn session_manager(shared: Arc<Shared>, sources: SourceList) {
     let mut routed_any = false;
     let mut defaults = Defaults::default();
     let mut managing = false;
+    // (inicio de la ventana de un minuto, predeterminados corregidos en ella).
+    let mut corrections = (Instant::now(), 0u32);
 
     while !shared.quit.load(Ordering::Relaxed) {
         let woke = waker.wait(timeout);
@@ -223,7 +239,10 @@ fn session_manager(shared: Arc<Shared>, sources: SourceList) {
         }
         let now = Instant::now();
         // La lista de dispositivos solo se rehace cuando Windows avisa de un cambio (o cada minuto por si acaso).
-        if devices_dirty.swap(false, Ordering::Relaxed) || last_devices.is_none_or(|t| now.duration_since(t) > Duration::from_secs(60)) {
+        // Un aviso de dispositivos (también cuando cambia un predeterminado) hace además comprobar
+        // que los predeterminados de Windows siguen siendo los nuestros.
+        let devices_changed = devices_dirty.swap(false, Ordering::Relaxed);
+        if devices_changed || last_devices.is_none_or(|t| now.duration_since(t) > Duration::from_secs(60)) {
             *shared.devices.write() = list_all_devices();
             last_devices = Some(now);
         }
@@ -292,7 +311,15 @@ fn session_manager(shared: Arc<Shared>, sources: SourceList) {
         //    si no, mandar todo el sonido a un dispositivo virtual dejaría el PC mudo.
         let output_ok = shared.active_output.read().is_some();
         if settings.manage_defaults && output_ok {
-            apply_defaults(&wanted_defaults(&settings, &devices), &mut defaults);
+            // Si otro programa se empeña en cambiarlos, no nos peleamos sin fin: como mucho 6
+            // correcciones por minuto.
+            if corrections.0.elapsed() > Duration::from_secs(60) {
+                corrections = (Instant::now(), 0);
+            }
+            let verify = devices_changed && corrections.1 < 6;
+            if apply_defaults(&wanted_defaults(&settings, &devices), &mut defaults, verify) {
+                corrections.1 += 1;
+            }
             release_silent_mic(&settings, &devices);
             // Solo "gestionamos" si de verdad hemos puesto algún predeterminado: si no, al salir
             // no hay nada nuestro que deshacer.
