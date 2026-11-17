@@ -70,6 +70,8 @@ and do it all with **~5 MB of RAM** in the background.
 
 ### 🪶 Desktop
 - **Tray-first**: the engine lives in the tray; the window is a separate process that only exists while it's open.
+- **Global mute shortcuts** for the mic, all outputs or any channel (Ctrl+Alt+M / Ctrl+Alt+S by default, rebindable in Settings). They work in games and with the window closed.
+- **On-screen notice** when something is muted or unmuted: a click-through card over windowed and borderless games, with a configurable corner and duration.
 - **One-click setup**: detects the virtual cables, assigns channels, and picks your headphones and mic.
 - **Tidy up Windows devices**: renames the virtual devices to *Rust Sonar - Game / Chat / …* and hides the clutter. It can be undone.
 - **Custom installer**, start with Windows, single instance, clean uninstall.
@@ -288,6 +290,8 @@ src/
 ├── api.rs               REST API (axum, single-threaded tokio)
 ├── system.rs            single instance, autostart, window helpers
 ├── tray.rs              Win32 tray icon
+├── hotkeys.rs           keys allowed in shortcuts (name ↔ virtual key ↔ egui key)
+├── overlay.rs           global shortcuts (RegisterHotKey) and the on-screen mute notice
 ├── virtual_devices.rs   detection, one-click setup, device tidy-up and uninstall cleanup
 ├── sonar_import.rs      SteelSeries Sonar share-link import/export
 ├── audio/
@@ -304,7 +308,7 @@ docs/                    notes, Spanish README, media generator
 ```
 
 ```powershell
-cargo test                                      # 56 unit tests
+cargo test                                      # 59 unit tests
 cargo test --release -- --ignored --nocapture   # probes against real hardware
 ```
 

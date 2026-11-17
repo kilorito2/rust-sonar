@@ -4,7 +4,8 @@ use super::SonarApp;
 use super::icons;
 use super::theme::{self, *};
 use super::widgets::{self, card, primary_button, secondary_button, section_header};
-use crate::config::{Channel, Settings};
+use crate::config::{Channel, MuteTarget, OverlayCorner, Settings};
+use crate::hotkeys;
 use crate::state::DeviceInfo;
 use crate::virtual_devices::{self as vdev, Role};
 use eframe::egui::{self, Align, CornerRadius, Layout, Margin, RichText, Stroke, Ui};
@@ -14,6 +15,8 @@ impl SonarApp {
         self.virtual_devices_card(ui, s);
         ui.add_space(16.0);
         self.apps_card(ui, s);
+        ui.add_space(16.0);
+        self.hotkeys_card(ui, s);
         ui.add_space(16.0);
         self.general_card(ui, s);
         ui.add_space(16.0);
@@ -227,6 +230,153 @@ impl SonarApp {
 }
 
 impl SonarApp {
+    /// Empieza (Some) o termina (None) de grabar el atajo de una acción. Mientras se graba, el motor
+    /// suelta los atajos registrados: si no, pulsar uno ya en uso silenciaría en vez de grabarse.
+    fn set_capturing(&mut self, t: Option<MuteTarget>, port: u16) {
+        if self.capturing.is_some() != t.is_some() {
+            super::client::pause_hotkeys(port, t.is_some());
+        }
+        self.capturing = t;
+        self.capture_hint = None;
+    }
+
+    /// Lee la combinación pulsada mientras se graba un atajo.
+    fn capture_keys(&mut self, ui: &Ui, s: &mut Settings) {
+        let Some(target) = self.capturing else { return };
+        // Si la ventana pierde el foco la pulsación ya no llegaría: se deja de grabar.
+        if !ui.input(|i| i.focused) {
+            self.set_capturing(None, s.api_port);
+            return;
+        }
+        let mut result = None;
+        ui.ctx().input_mut(|i| {
+            for ev in &i.events {
+                if let egui::Event::Key { key, physical_key, pressed: true, modifiers, .. } = ev {
+                    if *key == egui::Key::Escape {
+                        result = Some(None);
+                        break;
+                    }
+                    match hotkeys::from_egui(*key, *physical_key, *modifiers) {
+                        hotkeys::Captured::Key(h) => {
+                            result = Some(Some(h));
+                            break;
+                        }
+                        hotkeys::Captured::NeedsModifier => {
+                            self.capture_hint = Some(tr!("Con letras, números o flechas hace falta Ctrl o Alt", "Letters, numbers and arrows need Ctrl or Alt"));
+                        }
+                        hotkeys::Captured::Unsupported => {
+                            self.capture_hint = Some(tr!("Esa tecla no se puede usar: prueba con letras, números, F1-F24 o Pausa", "That key can't be used: try letters, numbers, F1-F24 or Pause"));
+                        }
+                    }
+                }
+            }
+            // Que la pulsación no active además botones u otros atajos de la ventana.
+            i.events.retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)));
+        });
+        if let Some(r) = result {
+            if let Some(h) = r {
+                s.hotkeys.assign(target, Some(h));
+            }
+            self.set_capturing(None, s.api_port);
+        }
+    }
+
+    fn hotkeys_card(&mut self, ui: &mut Ui, s: &mut Settings) {
+        self.capture_keys(ui, s);
+        let conflicts = self.shared.status.read().hotkey_conflicts.clone();
+        card(ui, None, false, |ui| {
+            section_header(
+                ui,
+                icons::KEYBOARD,
+                tr!("Atajos de teclado", "Keyboard shortcuts"),
+                Some(tr!("Silencian o activan desde cualquier programa, también en juegos y con la ventana cerrada", "Mute or unmute from any program, in games too and with the window closed")),
+            );
+            egui::Grid::new("hotkeys").num_columns(3).spacing([16.0, 8.0]).show(ui, |ui| {
+                for t in MuteTarget::ALL {
+                    let (icon, color) = match t {
+                        MuteTarget::Mic => (icons::MICROPHONE, MIC),
+                        MuteTarget::Master => (icons::HEADPHONES, MASTER),
+                        MuteTarget::Channel(ch) => (theme::channel_icon(ch), channel_color(ch)),
+                    };
+                    ui.horizontal(|ui| {
+                        widgets::badge_icon(ui, icon, color, 26.0);
+                        ui.allocate_ui_with_layout(egui::vec2(150.0, 22.0), Layout::left_to_right(Align::Center), |ui| {
+                            let text = match t {
+                                MuteTarget::Mic => tr!("Silenciar micrófono", "Mute microphone").to_string(),
+                                MuteTarget::Master => tr!("Silenciar todas las salidas", "Mute all outputs").to_string(),
+                                MuteTarget::Channel(ch) => trf!("Silenciar {}", "Mute {}", ch.label()),
+                            };
+                            ui.label(RichText::new(text).font(medium(13.5)));
+                        });
+                    });
+
+                    let recording = self.capturing == Some(t);
+                    let current = s.hotkeys.get(t).cloned();
+                    ui.horizontal(|ui| {
+                        let (text, color, stroke) = match (&current, recording) {
+                            (_, true) => (tr!("Pulsa la combinación…", "Press the shortcut…").to_string(), ACCENT, ACCENT),
+                            (Some(h), false) => (hotkeys::label(h), TEXT, BORDER_STRONG),
+                            (None, false) => (tr!("Sin atajo", "No shortcut").to_string(), TEXT_3, BORDER),
+                        };
+                        let button = egui::Button::new(RichText::new(text).font(medium(13.0)).color(color))
+                            .fill(if recording { ACCENT.gamma_multiply(0.10) } else { SURFACE_2 })
+                            .stroke(Stroke::new(1.0, stroke))
+                            .corner_radius(CornerRadius::same(8))
+                            .min_size(egui::vec2(200.0, 30.0));
+                        let hint = if recording { tr!("Esc para cancelar", "Esc to cancel") } else { tr!("Clic para cambiarlo", "Click to change it") };
+                        if ui.add(button).on_hover_text(hint).clicked() {
+                            self.set_capturing(if recording { None } else { Some(t) }, s.api_port);
+                        }
+                        if current.is_some() && !recording && widgets::icon_button(ui, icons::CLOSE, tr!("Quitar el atajo", "Remove the shortcut"), false, DANGER).clicked() {
+                            s.hotkeys.assign(t, None);
+                        }
+                    });
+
+                    if recording {
+                        if let Some(hint) = self.capture_hint {
+                            ui.label(RichText::new(hint).size(12.0).color(WARN));
+                        } else {
+                            ui.label(RichText::new(tr!("Esc para cancelar", "Esc to cancel")).size(12.0).color(TEXT_3));
+                        }
+                    } else if current.is_some() && conflicts.contains(&t) {
+                        widgets::pill(ui, tr!("En uso por otro programa", "Used by another program"), DANGER)
+                            .on_hover_text(tr!("Windows no deja registrarlo porque otro programa ya usa esa combinación: elige otra", "Windows won't register it because another program already uses that combination: pick another one"));
+                    } else {
+                        ui.label("");
+                    }
+                    ui.end_row();
+                }
+            });
+
+            ui.add_space(14.0);
+            widgets::toggle_row(
+                ui,
+                &mut s.overlay.enabled,
+                tr!("Aviso en pantalla", "On-screen notice"),
+                tr!("Al silenciar o activar algo (con atajo, desde la bandeja o aquí) aparece un aviso unos segundos, también encima de los juegos en ventana o sin bordes", "When you mute or unmute something (with a shortcut, from the tray or here) a notice shows for a few seconds, also over windowed or borderless games"),
+            );
+            ui.add_space(8.0);
+            ui.add_enabled_ui(s.overlay.enabled, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(icons::BELL).font(theme::icon(15.0)).color(TEXT_2));
+                    ui.label(RichText::new(tr!("Posición", "Position")).color(TEXT_2));
+                    egui::ComboBox::from_id_salt("overlay_corner").selected_text(s.overlay.corner.label()).width(190.0).show_ui(ui, |ui| {
+                        for c in OverlayCorner::ALL {
+                            ui.selectable_value(&mut s.overlay.corner, c, c.label());
+                        }
+                    });
+                    ui.add_space(12.0);
+                    ui.label(RichText::new(tr!("Duración", "Duration")).color(TEXT_2));
+                    ui.add(egui::Slider::new(&mut s.overlay.seconds, 1.0..=6.0).step_by(0.5).fixed_decimals(1).suffix(" s"));
+                    ui.add_space(12.0);
+                    if secondary_button(ui, icons::PLAY, tr!("Probar", "Preview"), true).on_hover_text(tr!("Muestra el aviso del micrófono", "Shows the microphone notice")).clicked() {
+                        super::client::preview_overlay(s.api_port);
+                    }
+                });
+            });
+        });
+    }
+
     fn general_card(&mut self, ui: &mut Ui, s: &mut Settings) {
         card(ui, None, false, |ui| {
         section_header(ui, icons::SETTINGS, tr!("General", "General"), None);

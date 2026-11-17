@@ -10,6 +10,8 @@ mod api;
 mod audio;
 mod config;
 mod dsp;
+mod hotkeys;
+mod overlay;
 mod sonar_import;
 mod state;
 mod system;
@@ -61,6 +63,7 @@ fn run_engine(start_hidden: bool) {
     api::spawn(shared.clone());
     let icon = app_icon();
     tray::spawn(shared.clone(), icon.rgba.clone(), icon.width);
+    overlay::spawn(shared.clone());
 
     // Recién instalado (y reiniciado): si ya hay cables virtuales y nada asignado, se configura solo.
     let first = shared.clone();

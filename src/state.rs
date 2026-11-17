@@ -102,6 +102,9 @@ pub struct Status {
     pub mic: String,
     /// Aviso de conflicto con otro programa que usa los mismos dispositivos virtuales.
     pub conflict: Option<String>,
+    /// Atajos que Windows no dejó registrar (otro programa ya usa esa combinación).
+    #[serde(default)]
+    pub hotkey_conflicts: Vec<crate::config::MuteTarget>,
 }
 
 pub struct Shared {
@@ -200,6 +203,10 @@ impl Shared {
         self.wake.wake();
         self.out_wake.wake();
         self.mic_wake.wake();
+        // Atajos y aviso en pantalla (si algo se ha silenciado o activado, lo anuncia).
+        if !self.mirror {
+            crate::overlay::changed();
+        }
         r
     }
 

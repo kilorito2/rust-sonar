@@ -12,11 +12,11 @@
 
 pub mod client;
 mod eq_editor;
-mod icons;
+pub(crate) mod icons;
 mod mic;
 mod mixer;
 mod settings;
-mod theme;
+pub(crate) mod theme;
 mod widgets;
 
 use crate::config::{Channel, EqTarget};
@@ -104,6 +104,10 @@ pub struct SonarApp {
     autostart: bool,
     /// En Ajustes, ofrecer todos los dispositivos y no solo los virtuales.
     show_all_devices: bool,
+    /// Acción cuyo atajo se está grabando (esperando a que se pulse la combinación).
+    capturing: Option<crate::config::MuteTarget>,
+    /// Aviso mientras se graba (p. ej. «hace falta Ctrl o Alt»).
+    capture_hint: Option<&'static str>,
 }
 
 impl SonarApp {
@@ -119,6 +123,8 @@ impl SonarApp {
             action_msg: Arc::new(Mutex::new(None)),
             autostart: crate::system::autostart_enabled(),
             show_all_devices: false,
+            capturing: None,
+            capture_hint: None,
         }
     }
 

@@ -103,6 +103,22 @@ struct UiState {
     active_output: Option<String>,
 }
 
+/// Avisa al motor de que la ventana empieza (true) o termina (false) de grabar un atajo. En otro
+/// hilo para no frenar la ventana.
+pub fn pause_hotkeys(port: u16, paused: bool) {
+    let body = format!(r#"{{"paused":{paused}}}"#);
+    std::thread::spawn(move || {
+        let _ = Http::new(port).request("POST", "/api/ui/hotkeys/pause", Some(body.as_bytes()));
+    });
+}
+
+/// Pide al motor que enseñe el aviso en pantalla, para verlo.
+pub fn preview_overlay(port: u16) {
+    std::thread::spawn(move || {
+        let _ = Http::new(port).request("POST", "/api/ui/overlay/preview", None);
+    });
+}
+
 /// Pide al motor que se cierre (cuando «cerrar a la bandeja» está desactivado).
 pub fn quit_engine(port: u16) {
     let _ = Http::new(port).request("POST", "/api/quit", None);

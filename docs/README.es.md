@@ -29,6 +29,8 @@ inglés**: sigue el idioma de Windows y se puede cambiar en *Ajustes → General
 | Ecualizador paramétrico | Hasta 16 bandas por canal, presets y favoritos, curva de respuesta interactiva. |
 | Configuraciones de Sonar | Importa y exporta los enlaces de compartir de SteelSeries Sonar. |
 | Escritorio | Bandeja del sistema, inicio con Windows, instancia única, instalador propio. |
+| Atajos de teclado | Globales (`RegisterHotKey`) para silenciar el micro, todas las salidas o cada canal; por defecto Ctrl+Alt+M y Ctrl+Alt+S, se cambian en Ajustes. Funcionan en juegos y con la ventana cerrada. |
+| Aviso en pantalla | Al silenciar o activar algo aparece una tarjeta encima de todo (juegos en ventana o sin bordes), transparente al ratón; esquina y duración configurables. |
 | API REST | `axum` en `127.0.0.1:7878` (Stream Deck, scripts, web). |
 | Idiomas | Español e inglés (`src/i18n.rs`, macros `tr!` y `trf!`). |
 

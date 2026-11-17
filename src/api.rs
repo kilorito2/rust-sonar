@@ -49,6 +49,8 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/api/ui/state", get(ui_state))
         .route("/api/ui/meters", get(ui_meters))
         .route("/api/ui/settings", put(ui_settings))
+        .route("/api/ui/hotkeys/pause", post(pause_hotkeys))
+        .route("/api/ui/overlay/preview", post(preview_overlay))
         .with_state(shared)
 }
 
@@ -111,6 +113,24 @@ async fn ui_meters(State(sh): State<AppState>, Query(q): Query<MetersQuery>) -> 
 /// PUT /api/ui/settings: la ventana manda la configuración entera tras cada cambio.
 async fn ui_settings(State(sh): State<AppState>, Json(new): Json<crate::config::Settings>) -> StatusCode {
     sh.replace(new);
+    StatusCode::NO_CONTENT
+}
+
+#[derive(Deserialize)]
+struct PauseBody {
+    paused: bool,
+}
+
+/// POST /api/ui/hotkeys/pause: la ventana está grabando un atajo; mientras tanto se sueltan los
+/// registrados para que la combinación le llegue a ella y no silencie nada.
+async fn pause_hotkeys(Json(b): Json<PauseBody>) -> StatusCode {
+    crate::overlay::set_paused(b.paused);
+    StatusCode::NO_CONTENT
+}
+
+/// POST /api/ui/overlay/preview: muestra el aviso en pantalla (botón «Probar»).
+async fn preview_overlay() -> StatusCode {
+    crate::overlay::preview();
     StatusCode::NO_CONTENT
 }
 

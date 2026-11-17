@@ -430,6 +430,170 @@ impl Default for MicSettings {
     }
 }
 
+/// Lo que se puede silenciar con un atajo (y lo que anuncia el aviso en pantalla).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MuteTarget {
+    Mic,
+    /// Todas las salidas (el master).
+    Master,
+    Channel(Channel),
+}
+
+impl MuteTarget {
+    pub const ALL: [MuteTarget; 6] = [
+        MuteTarget::Mic,
+        MuteTarget::Master,
+        MuteTarget::Channel(Channel::Game),
+        MuteTarget::Channel(Channel::Chat),
+        MuteTarget::Channel(Channel::Media),
+        MuteTarget::Channel(Channel::Aux),
+    ];
+
+    pub fn index(self) -> usize {
+        match self {
+            MuteTarget::Mic => 0,
+            MuteTarget::Master => 1,
+            MuteTarget::Channel(ch) => 2 + ch.index(),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MuteTarget::Mic => tr!("Micrófono", "Microphone"),
+            MuteTarget::Master => tr!("Todas las salidas", "All outputs"),
+            MuteTarget::Channel(ch) => ch.label(),
+        }
+    }
+
+    pub fn is_muted(self, s: &Settings) -> bool {
+        match self {
+            MuteTarget::Mic => s.mic.muted,
+            MuteTarget::Master => s.master_muted,
+            MuteTarget::Channel(ch) => s.channel(ch).muted,
+        }
+    }
+
+    /// Volumen (0 … 1) que muestra el aviso.
+    pub fn volume(self, s: &Settings) -> f32 {
+        match self {
+            MuteTarget::Mic => s.mic.volume,
+            MuteTarget::Master => s.master_volume,
+            MuteTarget::Channel(ch) => s.channel(ch).volume,
+        }
+    }
+
+    pub fn toggle(self, s: &mut Settings) {
+        let m = match self {
+            MuteTarget::Mic => &mut s.mic.muted,
+            MuteTarget::Master => &mut s.master_muted,
+            MuteTarget::Channel(ch) => &mut s.channel_mut(ch).muted,
+        };
+        *m = !*m;
+    }
+}
+
+/// Una combinación de teclas. `key` es el nombre de la tecla («M», «F9», «Pausa»…, ver `hotkeys::KEYS`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hotkey {
+    #[serde(default)]
+    pub ctrl: bool,
+    #[serde(default)]
+    pub alt: bool,
+    #[serde(default)]
+    pub shift: bool,
+    #[serde(default)]
+    pub win: bool,
+    pub key: String,
+}
+
+impl Hotkey {
+    pub fn ctrl_alt(key: &str) -> Self {
+        Self { ctrl: true, alt: true, shift: false, win: false, key: key.into() }
+    }
+}
+
+/// Un atajo por cada `MuteTarget` (None = sin atajo).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Hotkeys {
+    pub mic: Option<Hotkey>,
+    pub master: Option<Hotkey>,
+    pub channels: [Option<Hotkey>; 4],
+}
+
+impl Default for Hotkeys {
+    fn default() -> Self {
+        Self { mic: Some(Hotkey::ctrl_alt("M")), master: Some(Hotkey::ctrl_alt("S")), channels: Default::default() }
+    }
+}
+
+impl Hotkeys {
+    pub fn get(&self, t: MuteTarget) -> Option<&Hotkey> {
+        match t {
+            MuteTarget::Mic => self.mic.as_ref(),
+            MuteTarget::Master => self.master.as_ref(),
+            MuteTarget::Channel(ch) => self.channels[ch.index()].as_ref(),
+        }
+    }
+
+    pub fn get_mut(&mut self, t: MuteTarget) -> &mut Option<Hotkey> {
+        match t {
+            MuteTarget::Mic => &mut self.mic,
+            MuteTarget::Master => &mut self.master,
+            MuteTarget::Channel(ch) => &mut self.channels[ch.index()],
+        }
+    }
+
+    /// Asigna `key` a `t` y se lo quita a cualquier otra acción que lo tuviera (no puede haber dos
+    /// acciones en la misma combinación).
+    pub fn assign(&mut self, t: MuteTarget, key: Option<Hotkey>) {
+        if let Some(k) = &key {
+            for other in MuteTarget::ALL {
+                if other != t && self.get(other) == Some(k) {
+                    *self.get_mut(other) = None;
+                }
+            }
+        }
+        *self.get_mut(t) = key;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OverlayCorner {
+    #[default]
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl OverlayCorner {
+    pub const ALL: [OverlayCorner; 4] = [OverlayCorner::TopLeft, OverlayCorner::TopRight, OverlayCorner::BottomLeft, OverlayCorner::BottomRight];
+    pub fn label(self) -> &'static str {
+        match self {
+            OverlayCorner::TopLeft => tr!("Arriba a la izquierda", "Top left"),
+            OverlayCorner::TopRight => tr!("Arriba a la derecha", "Top right"),
+            OverlayCorner::BottomLeft => tr!("Abajo a la izquierda", "Bottom left"),
+            OverlayCorner::BottomRight => tr!("Abajo a la derecha", "Bottom right"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OverlaySettings {
+    pub enabled: bool,
+    pub corner: OverlayCorner,
+    /// Segundos que se queda a la vista.
+    pub seconds: f32,
+}
+
+impl Default for OverlaySettings {
+    fn default() -> Self {
+        Self { enabled: true, corner: OverlayCorner::TopLeft, seconds: 2.0 }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -472,6 +636,10 @@ pub struct Settings {
     pub renamed_devices: BTreeMap<String, String>,
     /// Idioma de la interfaz (Auto = el de Windows).
     pub language: crate::i18n::Language,
+    /// Atajos de teclado globales para silenciar o activar el micro y las salidas.
+    pub hotkeys: Hotkeys,
+    /// Aviso en pantalla al silenciar o activar algo.
+    pub overlay: OverlaySettings,
 }
 
 pub const DEFAULT_IGNORED: [&str; 4] = ["audiodg", "steelseriessonar", "steelseriesgg", "rust_sonar"];
@@ -500,6 +668,8 @@ impl Default for Settings {
             auto_setup_done: false,
             renamed_devices: BTreeMap::new(),
             language: crate::i18n::Language::Auto,
+            hotkeys: Hotkeys::default(),
+            overlay: OverlaySettings::default(),
         }
     }
 }
@@ -739,6 +909,19 @@ mod tests {
         s.output_device = Some("B".into());
         assert_eq!(s.virtual_device_problems().len(), 1);
         assert_eq!(s.virtual_device_ids(), vec!["A".to_string(), "B".to_string()]);
+    }
+
+    #[test]
+    fn hotkey_assign_moves_combination() {
+        let mut h = Hotkeys::default();
+        let mic = h.mic.clone();
+        h.assign(MuteTarget::Channel(Channel::Chat), mic.clone());
+        assert_eq!(h.mic, None);
+        assert_eq!(h.get(MuteTarget::Channel(Channel::Chat)), mic.as_ref());
+        let mut s = Settings::default();
+        MuteTarget::Channel(Channel::Aux).toggle(&mut s);
+        assert!(MuteTarget::Channel(Channel::Aux).is_muted(&s));
+        assert!(!MuteTarget::Mic.is_muted(&s));
     }
 
     #[test]
