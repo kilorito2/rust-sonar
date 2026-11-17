@@ -336,6 +336,8 @@ struct MicPatch {
     volume: Option<f32>,
     gain_db: Option<f32>,
     noise_suppression: Option<bool>,
+    /// "soft" | "normal" | "strong" | "max"
+    suppression: Option<String>,
     vad_gate: Option<bool>,
     vad_threshold: Option<f32>,
     gate_enabled: Option<bool>,
@@ -354,6 +356,7 @@ async fn patch_mic(State(sh): State<AppState>, Json(b): Json<MicPatch>) -> ApiRe
         if let Some(v) = b.volume { m.volume = v.clamp(0.0, 1.0) }
         if let Some(v) = b.gain_db { m.gain_db = v.clamp(-20.0, 30.0) }
         if let Some(v) = b.noise_suppression { m.noise_suppression = v }
+        if let Some(v) = b.suppression.as_deref().and_then(crate::config::Suppression::parse) { m.suppression = v }
         if let Some(v) = b.vad_gate { m.vad_gate = v }
         if let Some(v) = b.vad_threshold { m.vad_threshold = v.clamp(0.0, 1.0) }
         if let Some(v) = b.gate_enabled { m.gate_enabled = v }

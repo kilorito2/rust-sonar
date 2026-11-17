@@ -62,6 +62,23 @@ impl SonarApp {
                     section_header(ui, icons::SPARKLE, tr!("Limpieza de voz con IA", "AI voice cleanup"), Some(tr!("Red neuronal RNNoise ejecutándose en local", "RNNoise neural network running locally")));
                     let m = &mut s.mic;
                     toggle_row(ui, &mut m.noise_suppression, tr!("Supresión de ruido", "Noise suppression"), tr!("Elimina teclado, ventiladores y ruido de fondo", "Removes keyboard, fans and background noise"));
+                    ui.add_enabled_ui(m.noise_suppression, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(tr!("Intensidad", "Strength")).size(12.5).color(TEXT_2));
+                            for level in crate::config::Suppression::ALL {
+                                let on = m.suppression == level;
+                                let text = RichText::new(level.label()).font(theme::medium(12.5)).color(if on { BG } else { TEXT_2 });
+                                let b = egui::Button::new(text)
+                                    .fill(if on { ACCENT } else { SURFACE_2 })
+                                    .stroke(egui::Stroke::new(1.0, if on { ACCENT } else { BORDER }))
+                                    .corner_radius(egui::CornerRadius::same(8));
+                                if ui.add(b).on_hover_text(level.hint()).clicked() {
+                                    m.suppression = level;
+                                }
+                            }
+                        });
+                        ui.label(RichText::new(m.suppression.hint()).size(12.0).color(TEXT_3));
+                    });
                     ui.add_space(6.0);
                     toggle_row(ui, &mut m.vad_gate, tr!("Cortar cuando no hablo", "Cut when I'm not talking"), tr!("Silencia el micro si no detecta voz", "Mutes the mic when no voice is detected"));
                     ui.add_enabled_ui(m.vad_gate, |ui| {

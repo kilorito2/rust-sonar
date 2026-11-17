@@ -379,6 +379,79 @@ impl Default for ChannelSettings {
     }
 }
 
+/// Cuánto limpia la supresión de ruido. Más fuerte quita más restos entre palabras (tecleo,
+/// respiración, clics), a cambio de sonar algo menos natural.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Suppression {
+    /// Solo la red neuronal: la más natural.
+    Soft,
+    #[default]
+    Normal,
+    Strong,
+    /// Dos pasadas de la red y casi silencio entre palabras.
+    Max,
+}
+
+impl Suppression {
+    pub const ALL: [Suppression; 4] = [Suppression::Soft, Suppression::Normal, Suppression::Strong, Suppression::Max];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Suppression::Soft => tr!("Suave", "Soft"),
+            Suppression::Normal => tr!("Normal", "Normal"),
+            Suppression::Strong => tr!("Fuerte", "Strong"),
+            Suppression::Max => tr!("Máxima", "Max"),
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            Suppression::Soft => tr!("La más natural: quita el ruido de fondo constante", "Most natural: removes steady background noise"),
+            Suppression::Normal => tr!("Además baja los restos entre palabras", "Also lowers what's left between words"),
+            Suppression::Strong => tr!("Casi no deja pasar tecleo ni respiración", "Lets almost no typing or breathing through"),
+            Suppression::Max => tr!("Dos pasadas de la IA y silencio entre palabras; para sitios muy ruidosos", "Two AI passes and silence between words; for very noisy rooms"),
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Suppression::Soft => "soft",
+            Suppression::Normal => "normal",
+            Suppression::Strong => "strong",
+            Suppression::Max => "max",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Suppression> {
+        Self::ALL.into_iter().find(|l| l.key() == s.to_ascii_lowercase())
+    }
+
+    /// Nivel (dB) al que se bajan los restos cuando no se detecta voz. 0 = no se tocan.
+    pub fn floor_db(self) -> f32 {
+        match self {
+            Suppression::Soft => 0.0,
+            Suppression::Normal => -9.0,
+            Suppression::Strong => -22.0,
+            Suppression::Max => -40.0,
+        }
+    }
+
+    /// Pasadas de la red neuronal.
+    pub fn passes(self) -> usize {
+        if self == Suppression::Max { 2 } else { 1 }
+    }
+
+    /// Cuánto sigue abierto el micro tras la última sílaba (segundos). Más corto limpia antes
+    /// entre palabras; más largo protege mejor los finales de palabra.
+    pub fn hold_s(self) -> f32 {
+        match self {
+            Suppression::Soft | Suppression::Normal => 0.28,
+            Suppression::Strong => 0.20,
+            Suppression::Max => 0.14,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MicSettings {
@@ -392,6 +465,8 @@ pub struct MicSettings {
     pub muted: bool,
     /// Supresión de ruido con RNNoise (red neuronal recurrente).
     pub noise_suppression: bool,
+    /// Intensidad de la supresión de ruido.
+    pub suppression: Suppression,
     /// Silencia cuando la probabilidad de voz de RNNoise baja de `vad_threshold`.
     pub vad_gate: bool,
     pub vad_threshold: f32,
@@ -417,6 +492,7 @@ impl Default for MicSettings {
             volume: 1.0,
             muted: false,
             noise_suppression: true,
+            suppression: Suppression::Normal,
             vad_gate: false,
             vad_threshold: 0.6,
             gate_enabled: false,

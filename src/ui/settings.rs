@@ -21,6 +21,69 @@ impl SonarApp {
         self.general_card(ui, s);
         ui.add_space(16.0);
         api_card(ui, s);
+        ui.add_space(16.0);
+        self.uninstall_card(ui);
+    }
+
+    /// Desinstalar todo: Rust Sonar, su configuración y los drivers de VB-Audio que instaló.
+    fn uninstall_card(&mut self, ui: &mut Ui) {
+        card(ui, Some(DANGER), false, |ui| {
+            section_header(
+                ui,
+                icons::TRASH,
+                tr!("Desinstalar", "Uninstall"),
+                Some(tr!(
+                    "Quita Rust Sonar y todos los drivers que instaló, sin dejar rastro: al volver a instalarlo empieza de cero",
+                    "Removes Rust Sonar and every driver it installed, leaving no trace: reinstalling it starts from scratch"
+                )),
+            );
+            let names: Vec<&str> = crate::uninstall::DRIVERS.iter().map(|d| d.name).collect();
+            if !self.confirm_uninstall {
+                if widgets::danger_button(ui, icons::TRASH, tr!("Desinstalar…", "Uninstall…")).clicked() {
+                    self.confirm_uninstall = true;
+                    *self.uninstall_msg.lock() = None;
+                }
+            } else {
+                widgets::notice(
+                    ui,
+                    icons::WARNING,
+                    WARN,
+                    &trf!(
+                        "Se quitarán los drivers {} (con sus dispositivos, programas y archivos), Rust Sonar y su configuración. \
+                         Los dispositivos de Windows vuelven a como estaban. Si usas Voicemeeter o VB-CABLE con otros programas, \
+                         dejarán de funcionar. Pedirá permisos de administrador y, al terminar, conviene reiniciar.",
+                        "This removes the {} drivers (with their devices, programs and files), Rust Sonar and its settings. \
+                         Windows' devices go back to how they were. If you use Voicemeeter or VB-CABLE with other programs, \
+                         they'll stop working. It asks for administrator rights and a restart is recommended afterwards.",
+                        names.join(", ")
+                    ),
+                );
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if widgets::danger_button(ui, icons::TRASH, tr!("Sí, desinstalar todo", "Yes, uninstall everything")).clicked() {
+                        self.confirm_uninstall = false;
+                        let msg = self.uninstall_msg.clone();
+                        *msg.lock() = Some((true, tr!("Esperando el permiso de administrador…", "Waiting for administrator permission…").into()));
+                        // El aviso de Windows bloquea hasta que se responde: fuera del hilo de la ventana.
+                        std::thread::spawn(move || {
+                            let _com = crate::audio::wasapi::ComGuard::init();
+                            *msg.lock() = Some(match crate::uninstall::launch() {
+                                Ok(()) => (true, tr!("Desinstalando: sigue en la ventana nueva. Esta se cerrará sola.", "Uninstalling: follow it in the new window. This one will close by itself.").into()),
+                                Err(e) => (false, format!("{e:#}")),
+                            });
+                        });
+                    }
+                    if secondary_button(ui, icons::CLOSE, tr!("Cancelar", "Cancel"), true).clicked() {
+                        self.confirm_uninstall = false;
+                    }
+                });
+            }
+            if let Some((ok, msg)) = self.uninstall_msg.lock().clone() {
+                ui.add_space(8.0);
+                let (icon, color) = if ok { (icons::INFO, ACCENT) } else { (icons::WARNING, DANGER) };
+                widgets::notice(ui, icon, color, &msg);
+            }
+        });
     }
 
     fn virtual_devices_card(&mut self, ui: &mut Ui, s: &mut Settings) {

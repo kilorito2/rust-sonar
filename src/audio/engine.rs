@@ -1105,6 +1105,83 @@ mod tests {
         println!("{name}: pico {:.1} dBFS", crate::dsp::lin_to_db(max));
     }
 
+    /// ¿Vuelve a sonar en algún sitio lo que sale por el micro virtual? Reproduce pitidos en
+    /// `RUST_SONAR_PROBE_OUT` (la entrada del cable del micro) y mide cada salida en loopback, antes
+    /// y durante. `cargo test --release --bin rust_sonar -- --ignored probe_mic_echo --nocapture`
+    #[test]
+    #[ignore]
+    fn probe_mic_echo() {
+        let _com = ComGuard::init();
+        let id = std::env::var("RUST_SONAR_PROBE_OUT").expect("falta RUST_SONAR_PROBE_OUT");
+        let (src_dev, src_name, _) = wasapi::get_device(Some(&id), eRender).unwrap();
+        let outs = wasapi::list_devices(eRender).unwrap();
+        let mut caps: Vec<(String, CaptureStream, f32, f32)> = outs
+            .iter()
+            .filter(|d| d.id != id)
+            .filter_map(|d| wasapi::get_device(Some(&d.id), eRender).ok().and_then(|(dev, ..)| CaptureStream::loopback(&dev).ok()).map(|c| (d.name.clone(), c, 0.0, 0.0)))
+            .collect();
+        // Y cada programa que tenga una sesión de sonido, por separado.
+        for p in wasapi::list_session_processes().unwrap_or_default() {
+            if let Ok(c) = CaptureStream::process_loopback(p.pid) {
+                caps.push((format!("proceso {} ({})", p.name, p.pid), c, 0.0, 0.0));
+            }
+        }
+        // Nivel del tono de 700 Hz (Goertzel) en el primer canal: así la voz de la llamada no cuenta.
+        fn tone_level(x: &[f32], channels: usize) -> f32 {
+            let w = 2.0 * std::f32::consts::PI * 700.0 / 48000.0;
+            let (c, mut s1, mut s2) = (2.0 * w.cos(), 0f32, 0f32);
+            let n = x.len() / channels.max(1);
+            for v in x.iter().step_by(channels.max(1)) {
+                let s0 = v + c * s1 - s2;
+                s2 = s1;
+                s1 = s0;
+            }
+            (s1 * s1 + s2 * s2 - c * s1 * s2).max(0.0).sqrt() * 2.0 / n.max(1) as f32
+        }
+        // Pitidos de 120 ms en un patrón irregular: si el mismo patrón vuelve desplazado, es eco.
+        const BEEPS: [u128; 5] = [0, 600, 1000, 1900, 2300];
+        let mut timeline: Vec<Vec<(u128, f32)>> = vec![Vec::new(); caps.len()];
+        let mut scratch = Vec::new();
+        let mut out = RenderStream::open(&src_dev, 2).unwrap();
+        let (mut phase, t) = (0f32, Instant::now());
+        while t.elapsed() < Duration::from_secs(4) {
+            let ms = t.elapsed().as_millis();
+            let on = BEEPS.iter().any(|b| ms >= *b && ms < b + 120);
+            out.write(10, |buf| {
+                for f in buf.chunks_exact_mut(2) {
+                    let v = if on { phase.sin() * 0.1 } else { 0.0 };
+                    phase += 2.0 * std::f32::consts::PI * 700.0 / 48000.0;
+                    f[0] = v;
+                    f[1] = v;
+                }
+            })
+            .unwrap();
+            for (i, (_, c, ..)) in caps.iter_mut().enumerate() {
+                let ch = c.channels() as usize;
+                let _ = c.read(0, &mut scratch, |x| timeline[i].push((t.elapsed().as_millis(), tone_level(x, ch))));
+            }
+        }
+        println!("PITIDOS de 700 Hz en {src_name} (-20 dBFS) a los {BEEPS:?} ms");
+        for ((name, ..), tl) in caps.iter().zip(&timeline) {
+            // Tramos en los que el tono pasa de -80 dB.
+            let mut spans: Vec<(u128, u128, f32)> = Vec::new();
+            for &(ms, lvl) in tl {
+                if lvl < 1e-4 {
+                    continue;
+                }
+                match spans.last_mut() {
+                    Some(s) if ms <= s.1 + 40 => {
+                        s.1 = ms;
+                        s.2 = s.2.max(lvl);
+                    }
+                    _ => spans.push((ms, ms, lvl)),
+                }
+            }
+            let txt: Vec<String> = spans.iter().map(|(a, b, l)| format!("{a}-{b} ms ({:.0} dB)", crate::dsp::lin_to_db(*l))).collect();
+            println!("  {name}: {}", if txt.is_empty() { "nada".into() } else { txt.join(", ") });
+        }
+    }
+
     #[test]
     fn chatmix_still_applies_to_device_channels() {
         let s = Settings { chatmix: 0.5, ..Default::default() };

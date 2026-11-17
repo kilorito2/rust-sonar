@@ -134,6 +134,18 @@ pub fn secondary_button(ui: &mut Ui, icon: &str, label: &str, enabled: bool) -> 
     )
 }
 
+/// Botón para acciones que borran cosas (rojo suave con borde rojo).
+pub fn danger_button(ui: &mut Ui, icon: &str, label: &str) -> Response {
+    let text = RichText::new(format!("{icon}  {label}")).font(medium(13.5)).color(DANGER);
+    ui.add(
+        egui::Button::new(text)
+            .fill(DANGER.gamma_multiply(0.10))
+            .stroke(Stroke::new(1.0, DANGER.gamma_multiply(0.55)))
+            .corner_radius(CornerRadius::same(8))
+            .min_size(vec2(0.0, 32.0)),
+    )
+}
+
 // ---------------------------------------------------------------------------------------------
 // Interruptores
 // ---------------------------------------------------------------------------------------------

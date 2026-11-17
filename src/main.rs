@@ -17,6 +17,7 @@ mod state;
 mod system;
 mod tray;
 mod ui;
+mod uninstall;
 mod virtual_devices;
 
 use state::Shared;
@@ -37,6 +38,10 @@ fn main() -> eframe::Result {
     // Lo lanza el desinstalador (ya como administrador) antes de borrar los archivos.
     if args.get(1).map(String::as_str) == Some(UNINSTALL_FLAG) {
         std::process::exit(virtual_devices::uninstall_cleanup() as i32);
+    }
+    // «Desinstalar» de Ajustes (copia en %TEMP%, como administrador): quita el programa y los drivers.
+    if args.get(1).map(String::as_str) == Some(uninstall::UNINSTALL_ALL_FLAG) {
+        return ui::uninstall_window::run(args.get(2).cloned(), app_icon());
     }
     // Lo lanza el instalador (como administrador): configura y ordena los dispositivos.
     if args.get(1).map(String::as_str) == Some(system::SETUP_DEVICES_FLAG) {

@@ -13,7 +13,8 @@ use super::fifo::Fifo;
 use super::wasapi::{self, CaptureStream, ComGuard, RenderStream};
 use crate::config::{MicSettings, SAMPLE_RATE};
 use crate::dsp::compressor::{Compressor, CompressorParams};
-use crate::dsp::{SmoothedGain, db_to_lin, eq::Equalizer, gate::NoiseGate, peak};
+use crate::dsp::biquad::{Biquad, Coeffs};
+use crate::dsp::{SmoothedGain, db_to_lin, eq::Equalizer, gate::NoiseGate, gate::VoiceFloor, peak};
 use crate::state::Shared;
 use crate::virtual_devices as vdev;
 use nnnoiseless::DenoiseState;
@@ -200,6 +201,11 @@ fn output_chain(shared: &Shared, stop: &AtomicBool, fifo: &Fifo, device: Option<
 
 pub struct MicProcessor {
     denoise: Box<DenoiseState<'static>>,
+    /// Segunda pasada de la red (nivel Máxima).
+    denoise2: Box<DenoiseState<'static>>,
+    /// Paso alto antes de la red: fuera el zumbido y los golpes de mesa, que no son voz.
+    rumble: Biquad,
+    voice_floor: VoiceFloor,
     gate: NoiseGate,
     vad_gain: SmoothedGain,
     out_gain: SmoothedGain,
@@ -214,6 +220,13 @@ impl MicProcessor {
         let fs = SAMPLE_RATE as f32;
         Self {
             denoise: DenoiseState::new(),
+            denoise2: DenoiseState::new(),
+            rumble: {
+                let mut b = Biquad::default();
+                b.set_coeffs(Coeffs::design(crate::config::FilterKind::HighPass, 90.0, 0.0, 0.707, fs as f64));
+                b
+            },
+            voice_floor: VoiceFloor::new(fs),
             gate: NoiseGate::new(fs),
             vad_gain: SmoothedGain::new(fs, 0.03),
             out_gain: SmoothedGain::new(fs, 0.015),
@@ -236,6 +249,12 @@ impl MicProcessor {
         }
 
         if self.cfg.noise_suppression || self.cfg.vad_gate {
+            let level = self.cfg.suppression;
+            if self.cfg.noise_suppression {
+                for x in frame.iter_mut() {
+                    *x = self.rumble.process(*x);
+                }
+            }
             // RNNoise espera la escala de un i16 (±32768), no ±1.0.
             let mut input = [0.0f32; FRAME];
             for (i, x) in frame.iter().enumerate() {
@@ -244,9 +263,16 @@ impl MicProcessor {
             let mut output = [0.0f32; FRAME];
             self.last_vad = self.denoise.process_frame(&mut output, &input);
             if self.cfg.noise_suppression {
+                if level.passes() > 1 {
+                    // La segunda pasada trabaja sobre lo ya limpio y se lleva lo que quedaba.
+                    let first = output;
+                    self.denoise2.process_frame(&mut output, &first);
+                }
                 for (x, y) in frame.iter_mut().zip(output) {
                     *x = y / 32768.0;
                 }
+                // Restos entre palabras: abajo cuando la red no oye voz.
+                self.voice_floor.process(frame, self.last_vad, level.floor_db(), level.hold_s());
             }
         }
 
@@ -264,5 +290,118 @@ impl MicProcessor {
         }
         let vol = if self.cfg.muted { 0.0 } else { self.cfg.volume };
         self.out_gain.apply(frame, 1, vol);
+    }
+}
+
+#[cfg(test)]
+mod suppression_tests {
+    use super::*;
+    use crate::config::Suppression;
+
+    /// Ruido de prueba: siseo constante a unos −34 dBFS con un clic fuerte (tecla) cada 150 ms.
+    fn noise(seconds: f32) -> Vec<f32> {
+        let mut seed = 0x1234_5678u32;
+        let n = (seconds * SAMPLE_RATE as f32) as usize;
+        (0..n)
+            .map(|i| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let hiss = ((seed >> 8) as f32 / 8_388_608.0 - 1.0) * 0.035;
+                let t = i % 7200;
+                let click = if t < 96 { (t as f32 * 0.9).sin() * 0.25 * (1.0 - t as f32 / 96.0) } else { 0.0 };
+                hiss + click
+            })
+            .collect()
+    }
+
+    /// Nivel RMS (dB) de lo que sale por el micro con ese ruido, descartando el primer segundo
+    /// (lo que tarda la red en adaptarse).
+    fn residual_db(level: Option<Suppression>) -> f32 {
+        let mut p = MicProcessor::new();
+        let cfg = MicSettings { noise_suppression: level.is_some(), suppression: level.unwrap_or_default(), ..Default::default() };
+        p.configure(&cfg);
+        let input = noise(4.0);
+        let (mut sum, mut count) = (0.0f64, 0usize);
+        for (i, chunk) in input.chunks_exact(FRAME).enumerate() {
+            let mut frame = [0.0f32; FRAME];
+            frame.copy_from_slice(chunk);
+            p.process(&mut frame);
+            if i >= 100 {
+                sum += frame.iter().map(|x| (*x as f64).powi(2)).sum::<f64>();
+                count += FRAME;
+            }
+        }
+        10.0 * ((sum / count as f64).max(1e-12)).log10() as f32
+    }
+
+    /// WAV PCM de 16 bits, mono, 48 kHz (el que genera la voz sintética de Windows).
+    fn read_wav(path: &str) -> Vec<f32> {
+        let bytes = std::fs::read(path).expect("no se pudo leer el WAV");
+        let data = bytes.windows(4).position(|w| w == b"data").expect("sin bloque data") + 8;
+        bytes[data..].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect()
+    }
+
+    fn run(level: Option<Suppression>, input: &[f32]) -> Vec<f32> {
+        let mut p = MicProcessor::new();
+        p.configure(&MicSettings { noise_suppression: level.is_some(), suppression: level.unwrap_or_default(), ..Default::default() });
+        let mut out = Vec::with_capacity(input.len());
+        for chunk in input.chunks_exact(FRAME) {
+            let mut frame = [0.0f32; FRAME];
+            frame.copy_from_slice(chunk);
+            p.process(&mut frame);
+            out.extend_from_slice(&frame);
+        }
+        out
+    }
+
+    fn rms_db(x: impl Iterator<Item = f32>) -> f32 {
+        let (mut sum, mut n) = (0.0f64, 0usize);
+        for v in x {
+            sum += (v as f64).powi(2);
+            n += 1;
+        }
+        10.0 * ((sum / n.max(1) as f64).max(1e-12)).log10() as f32
+    }
+
+    /// Con una voz de verdad (`RUST_SONAR_VOICE_WAV`): cuánta voz se pierde en cada nivel y cuánto
+    /// ruido queda en las pausas, con la voz sola y con ruido encima.
+    /// `cargo test --release -- --ignored probe_voice_quality --nocapture`
+    #[test]
+    #[ignore]
+    fn probe_voice_quality() {
+        let voice = read_wav(&std::env::var("RUST_SONAR_VOICE_WAV").expect("falta RUST_SONAR_VOICE_WAV"));
+        // Dos segundos de silencio al final: ahí se ve lo que queda cuando de verdad no hablas.
+        let mut voice = voice;
+        let spoken = voice.len() / FRAME;
+        voice.extend(std::iter::repeat(0.0).take(2 * SAMPLE_RATE as usize));
+        let hiss = noise(voice.len() as f32 / SAMPLE_RATE as f32 + 1.0);
+        let noisy: Vec<f32> = voice.iter().zip(&hiss).map(|(v, n)| v + n).collect();
+        let tail = |x: &[f32]| rms_db(x.chunks_exact(FRAME).skip(spoken + 50).flat_map(|c| c.iter().copied()));
+        // Dónde hay voz y dónde pausa, según la voz limpia (bloques de 10 ms).
+        let speech: Vec<bool> = voice.chunks_exact(FRAME).map(|c| rms_db(c.iter().copied()) > -40.0).collect();
+        let part = |x: &[f32], want: bool| rms_db(x.chunks_exact(FRAME).zip(&speech).skip(100).filter(|(_, s)| **s == want).flat_map(|(c, _)| c.iter().copied()));
+        println!("VOZ en la entrada: {:.1} dB al hablar | ruido añadido en las pausas: {:.1} dB", part(&voice, true), part(&noisy, false));
+        for level in [None].into_iter().chain(Suppression::ALL.into_iter().map(Some)) {
+            let clean = run(level, &voice);
+            let mixed = run(level, &noisy);
+            let name = level.map(|l| l.label()).unwrap_or("sin supresión");
+            println!(
+                "NIVEL {name:<14} voz sola: {:+.1} dB | con ruido: al hablar {:.1} dB, entre palabras {:.1} dB, en silencio {:.1} dB",
+                part(&clean, true) - part(&voice, true),
+                part(&mixed, true),
+                rms_db(mixed.chunks_exact(FRAME).zip(&speech).take(spoken).skip(100).filter(|(_, s)| !**s).flat_map(|(c, _)| c.iter().copied())),
+                tail(&mixed)
+            );
+        }
+    }
+
+    #[test]
+    fn stronger_levels_leave_less_noise() {
+        let off = residual_db(None);
+        let levels: Vec<f32> = Suppression::ALL.iter().map(|l| residual_db(Some(*l))).collect();
+        println!("RUIDO sin supresión {off:.1} dB | suave {:.1} | normal {:.1} | fuerte {:.1} | máxima {:.1}", levels[0], levels[1], levels[2], levels[3]);
+        assert!(levels[0] < off - 4.0, "la red sola ya debe quitar ruido");
+        for pair in levels.windows(2) {
+            assert!(pair[1] < pair[0] - 3.0, "cada nivel debe limpiar más que el anterior: {levels:?}");
+        }
     }
 }

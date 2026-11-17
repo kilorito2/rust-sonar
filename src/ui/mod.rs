@@ -17,6 +17,7 @@ mod mic;
 mod mixer;
 mod settings;
 pub(crate) mod theme;
+pub mod uninstall_window;
 mod widgets;
 
 use crate::config::{Channel, EqTarget};
@@ -108,6 +109,10 @@ pub struct SonarApp {
     capturing: Option<crate::config::HotkeyAction>,
     /// Aviso mientras se graba (p. ej. «hace falta Ctrl o Alt»).
     capture_hint: Option<&'static str>,
+    /// Ajustes → Desinstalar: se está pidiendo confirmación.
+    confirm_uninstall: bool,
+    /// Resultado de lanzar la desinstalación (ok, mensaje).
+    uninstall_msg: Arc<Mutex<Option<(bool, String)>>>,
 }
 
 impl SonarApp {
@@ -125,6 +130,8 @@ impl SonarApp {
             show_all_devices: false,
             capturing: None,
             capture_hint: None,
+            confirm_uninstall: false,
+            uninstall_msg: Arc::new(Mutex::new(None)),
         }
     }
 
