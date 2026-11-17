@@ -44,6 +44,7 @@ and do it all with **~5 MB of RAM** in the background.
 - **ChatMix**: one slider to balance game against voice chat.
 - **Native volume integration**: each channel *is* a Windows device, so keyboard volume keys and the Windows mixer move the fader, and vice versa.
 - **Automatic app sorting** (Discord → Chat, Spotify → Media…), remembered by executable name.
+- **Streamer mode**: a second mix for your audience. Every channel and the mic get two faders — *personal* (your headphones) and *stream* — and the stream mix goes out through its own device for OBS to capture. Muting a channel for yourself doesn't take it off the stream, and vice versa.
 
 </td>
 <td width="50%" valign="top">
@@ -70,7 +71,7 @@ and do it all with **~5 MB of RAM** in the background.
 
 ### <a id="desktop" href="#desktop"><img src="assets/readme/icons/desktop.svg" width="22" height="22" align="top" alt=""></a> Desktop
 - **Tray-first**: the engine lives in the tray; the window is a separate process that only exists while it's open.
-- **Global mute shortcuts** for the mic, all outputs or any channel (Ctrl+Alt+M / Ctrl+Alt+S by default, rebindable in Settings). They work in games and with the window closed.
+- **Global shortcuts** to mute the mic, all outputs or any channel (Ctrl+Alt+M / Ctrl+Alt+S by default, rebindable in Settings), and to step the personal and stream volumes up or down. They work in games and with the window closed.
 - **On-screen notice** when something is muted or unmuted: a click-through card over windowed and borderless games, with a configurable corner and duration.
 - **One-click setup**: detects the virtual cables, assigns channels, and picks your headphones and mic.
 - **Tidy up Windows devices**: renames the virtual devices to *Rust Sonar - Game / Chat / …* and hides the clutter. It can be undone.
@@ -269,6 +270,8 @@ PATCH  /api/master                                {"volume":0.8}
 PUT    /api/chatmix                               {"value":-0.3,"enabled":true}
 PUT    /api/apps/{exe}                            {"channel":"chat"}
 PATCH  /api/mic                                   {"muted":true,"noise_suppression":true}
+PATCH  /api/streamer                              {"enabled":true,"volume":0.8,"muted":false,"device":"<id>"}
+PATCH  /api/streamer/channels/{ch|mic}            {"volume":0.5,"muted":true}   what goes to the stream
 POST   /api/import                                {"link":"<Sonar share link>","channel":"game"}
 GET    /api/channels/{ch}/export                  settings in Sonar's format
 POST   /api/setup                                 one-click setup

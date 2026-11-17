@@ -26,6 +26,8 @@ pub const WARN: Color32 = rgb(0xfb, 0xbf, 0x24);
 pub const OK: Color32 = rgb(0x4a, 0xde, 0x80);
 pub const MASTER: Color32 = rgb(0xe5, 0xe7, 0xeb);
 pub const MIC: Color32 = rgb(0xf4, 0x72, 0xb6);
+/// Mezcla de retransmisión (modo streamer).
+pub const STREAM: Color32 = rgb(0xfb, 0x7a, 0x3c);
 
 pub fn channel_color(ch: Channel) -> Color32 {
     match ch {

@@ -38,6 +38,10 @@ fn main() -> eframe::Result {
     if args.get(1).map(String::as_str) == Some(UNINSTALL_FLAG) {
         std::process::exit(virtual_devices::uninstall_cleanup() as i32);
     }
+    // Lo lanza el instalador (como administrador): configura y ordena los dispositivos.
+    if args.get(1).map(String::as_str) == Some(system::SETUP_DEVICES_FLAG) {
+        std::process::exit(virtual_devices::setup_devices_cli());
+    }
     if args.get(1).map(String::as_str) == Some(system::UI_FLAG) {
         return run_ui();
     }
@@ -73,6 +77,8 @@ fn run_engine(start_hidden: bool) {
         if let Err(e) = virtual_devices::first_run_setup(&first) {
             eprintln!("[configuración inicial] {e:#}");
         }
+        // Y, una sola vez, que en Windows queden solo los dispositivos de Rust Sonar.
+        virtual_devices::tidy_once(&first);
     });
 
     if !start_hidden {

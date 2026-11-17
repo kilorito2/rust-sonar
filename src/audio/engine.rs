@@ -15,6 +15,11 @@
 //!  bus Media ─► EQ ─► vol ─────────┤
 //!  bus Aux   ─► EQ ─► vol ─────────┘
 //! ```
+//!
+//! En modo streamer, cada bus (ya ecualizado) se suma además con su propio volumen a una segunda
+//! mezcla, la de retransmisión, junto con el micro. Esa mezcla pasa por una cola (`Shared::stream_out`)
+//! al hilo `stream_loop`, que la saca por su dispositivo (p. ej. un cable virtual que captura OBS).
+//! Así el público oye su propia mezcla y tú la tuya.
 
 use super::fifo::Fifo;
 use super::notify;
@@ -83,6 +88,8 @@ pub fn spawn(shared: Arc<Shared>) -> thread::JoinHandle<()> {
 
     let s = shared.clone();
     thread::Builder::new().name("volumen".into()).spawn(move || volume_sync(s)).unwrap();
+    let s = shared.clone();
+    thread::Builder::new().name("retransmision".into()).spawn(move || stream_loop(s)).unwrap();
     thread::Builder::new().name("mezclador".into()).spawn(move || output_loop(shared, sources)).unwrap();
     sessions
 }
@@ -443,10 +450,12 @@ fn session_manager(shared: Arc<Shared>, sources: SourceList) {
         }
 
         // 3) El micro solo se procesa si alguien lo usa: una app grabando del micro virtual, la
-        //    ventana abierta (vúmetros) o «Escucharme». Así tampoco sale el aviso de micro en uso.
+        //    ventana abierta (vúmetros), «Escucharme» o la retransmisión. Así tampoco sale el aviso
+        //    de micro en uso.
         let ui_wants = shared.ui_mic_until.load(Ordering::Relaxed) > crate::state::unix_ms();
         let recording = mic_input.as_ref().is_some_and(|id| is_active(id));
-        let mic_wanted = settings.mic.enabled && (recording || ui_wants || settings.mic.monitor);
+        let streaming = settings.stream_mic_gain() > 0.0;
+        let mic_wanted = settings.mic.enabled && (recording || ui_wants || settings.mic.monitor || streaming);
         if shared.mic_wanted.swap(mic_wanted, Ordering::Relaxed) != mic_wanted {
             shared.mic_wake.wake();
         }
@@ -493,6 +502,10 @@ fn session_manager(shared: Arc<Shared>, sources: SourceList) {
 /// La captura en loopback llega ya atenuada por el volumen del dispositivo, así que ese volumen ES
 /// el volumen del canal: las teclas de volumen del teclado (que mueven el dispositivo predeterminado,
 /// Juego) y el mezclador de Windows controlan el canal, y el fader de Rust Sonar mueve el de Windows.
+///
+/// En modo streamer no puede ser así: la retransmisión necesita el canal entero aunque tú lo tengas
+/// bajo o silenciado. Los dispositivos de canal se quedan al 100 % (si algo los mueve en Windows, se
+/// devuelven) y los dos volúmenes del canal los pone el mezclador.
 fn volume_sync(shared: Arc<Shared>) {
     let _com = ComGuard::init();
     // Ranuras 0-3: canales con dispositivo virtual. Ranura 4: Master ↔ salida silenciosa (en el modo
@@ -518,12 +531,14 @@ fn volume_sync(shared: Arc<Shared>) {
         seen_version = v;
         retry_at = None;
         for i in 0..5 {
-            let (device, ours) = {
+            let (device, ours, pinned) = {
                 let s = shared.settings.read();
+                let pinned = s.stream_active();
                 match Channel::ALL.get(i) {
-                    Some(&ch) => (s.channel(ch).device.clone(), (s.channel(ch).volume, s.channel(ch).muted)),
-                    None if s.channel(Channel::Game).device.is_none() => (s.sink_device.clone(), (s.master_volume, s.master_muted)),
-                    None => (None, (0.0, false)),
+                    Some(&ch) if pinned => (s.channel(ch).device.clone(), (1.0, false), true),
+                    Some(&ch) => (s.channel(ch).device.clone(), (s.channel(ch).volume, s.channel(ch).muted), false),
+                    None if s.channel(Channel::Game).device.is_none() => (s.sink_device.clone(), (s.master_volume, s.master_muted), false),
+                    None => (None, (0.0, false), false),
                 }
             };
             let Some(device) = device else {
@@ -548,9 +563,14 @@ fn volume_sync(shared: Arc<Shared>) {
             };
             let differs = |a: (f32, bool), b: (f32, bool)| (a.0 - b.0).abs() > 0.004 || a.1 != b.1;
             if last.0.is_nan() || differs(theirs, *last) {
-                // Cambió en Windows (teclas de volumen, mezclador): manda Windows.
+                // Cambió en Windows (teclas de volumen, mezclador): manda Windows, salvo en modo
+                // streamer, donde el dispositivo vuelve al 100 %.
                 *last = theirs;
-                if differs(theirs, ours) {
+                if differs(theirs, ours) && pinned {
+                    if ep.set(ours.0, ours.1).is_ok() {
+                        *last = ours;
+                    }
+                } else if differs(theirs, ours) {
                     shared.update(|s| match Channel::ALL.get(i) {
                         Some(&ch) => {
                             let c = s.channel_mut(ch);
@@ -662,6 +682,16 @@ struct Mixer {
     buses: Vec<Vec<f32>>,
     tmp: Vec<f32>,
     mono: Vec<f32>,
+    /// Mezcla de retransmisión (modo streamer).
+    stream_on: bool,
+    stream_gains: Vec<SmoothedGain>,
+    stream_targets: [f32; 4],
+    stream_master: SmoothedGain,
+    stream_master_target: f32,
+    stream_mic: SmoothedGain,
+    stream_mic_target: f32,
+    stream_buf: Vec<f32>,
+    send: Vec<f32>,
 }
 
 impl Mixer {
@@ -688,6 +718,15 @@ impl Mixer {
             buses: vec![Vec::new(); 4],
             tmp: Vec::new(),
             mono: Vec::new(),
+            stream_on: false,
+            stream_gains: (0..4).map(|_| SmoothedGain::new(fs, 0.015)).collect(),
+            stream_targets: [0.0; 4],
+            stream_master: SmoothedGain::new(fs, 0.015),
+            stream_master_target: 0.0,
+            stream_mic: SmoothedGain::new(fs, 0.015),
+            stream_mic_target: 0.0,
+            stream_buf: Vec::new(),
+            send: Vec::new(),
         }
     }
 
@@ -702,10 +741,14 @@ impl Mixer {
             self.smart_params[ch.index()] = CompressorParams::smart(cs.smart_loudness, cs.smart_level);
             self.surrounds[ch.index()].configure(&cs.surround);
             self.targets[ch.index()] = channel_gain(s, ch, self.device_ok[ch.index()]);
+            self.stream_targets[ch.index()] = s.stream_gain(ch);
         }
         self.master_target = if s.master_muted { 0.0 } else { s.master_volume };
         self.monitor_on = s.mic.enabled && s.mic.monitor;
         self.monitor_target = if self.monitor_on { s.mic.monitor_volume } else { 0.0 };
+        self.stream_on = s.stream_active();
+        self.stream_master_target = s.stream_master_gain();
+        self.stream_mic_target = s.stream_mic_gain();
     }
 
     fn render(&mut self, out: &mut [f32], shared: &Shared, sources: &[Arc<Source>]) {
@@ -735,6 +778,11 @@ impl Mixer {
         }
 
         out.fill(0.0);
+        if self.stream_on {
+            self.stream_buf.clear();
+            self.stream_buf.resize(n, 0.0);
+            self.send.resize(n, 0.0);
+        }
         for i in 0..4 {
             let bus = &mut self.buses[i];
             if !self.device_ok[i] {
@@ -743,6 +791,15 @@ impl Mixer {
             }
             self.eqs[i].process(bus);
             self.compressors[i].process(bus, 2, &self.smart_params[i], self.smart[i]);
+            // Envío a la retransmisión: el canal ya ecualizado, antes de su volumen personal.
+            if self.stream_on {
+                self.send.copy_from_slice(bus);
+                self.stream_gains[i].apply(&mut self.send, 2, self.stream_targets[i]);
+                shared.meters.stream_channels[i].store(peak(&self.send));
+                for (o, x) in self.stream_buf.iter_mut().zip(&self.send) {
+                    *o += *x;
+                }
+            }
             self.gains[i].apply(bus, 2, self.targets[i]);
             shared.meters.channels[i].store(peak(bus));
             for (o, x) in out.iter_mut().zip(bus.iter()) {
@@ -767,19 +824,43 @@ impl Mixer {
             *x = soft_clip(*x);
         }
         shared.meters.master.store(peak(out));
+
+        if self.stream_on {
+            self.stream_master.apply(&mut self.stream_buf, 2, self.stream_master_target);
+            // El micro va después del volumen general de la retransmisión, como la escucha en la
+            // personal: bajar la mezcla no baja tu voz.
+            self.mono.resize(n / 2, 0.0);
+            shared.stream_mic.pop_into(&mut self.mono);
+            self.tmp.clear();
+            self.tmp.extend(self.mono.iter().flat_map(|x| [*x, *x]));
+            self.stream_mic.apply(&mut self.tmp, 2, self.stream_mic_target);
+            for (o, x) in self.stream_buf.iter_mut().zip(&self.tmp) {
+                *o = soft_clip(*o + *x);
+            }
+            shared.meters.stream.store(peak(&self.stream_buf));
+            shared.stream_out.push(&self.stream_buf);
+        } else if self.stream_buf.len() > 0 {
+            // Recién apagada: los vúmetros a cero una vez.
+            self.stream_buf.clear();
+            shared.meters.stream.store(0.0);
+            for m in &shared.meters.stream_channels {
+                m.store(0.0);
+            }
+        }
     }
 }
 
-/// Ganancia que aplica el mezclador a un canal.
+/// Ganancia que aplica el mezclador a un canal en la mezcla personal.
 ///
 /// Con dispositivo virtual el volumen ya lo ha aplicado Windows en el propio dispositivo (ver
-/// `volume_sync`), así que aquí solo quedan el ChatMix y el refuerzo.
+/// `volume_sync`), así que aquí solo quedan el ChatMix y el refuerzo. En modo streamer el
+/// dispositivo está al 100 % y el volumen se aplica aquí.
 fn channel_gain(s: &Settings, ch: Channel, device_present: bool) -> f32 {
     let cs = s.channel(ch);
     if cs.muted {
         return 0.0;
     }
-    let volume = if device_present { 1.0 } else { cs.volume };
+    let volume = if device_present && !s.stream_active() { 1.0 } else { cs.volume };
     volume * s.chatmix_gain(ch) * db_to_lin(cs.boost_db.clamp(-12.0, 12.0))
 }
 
@@ -837,18 +918,19 @@ fn output_loop(shared: Arc<Shared>, sources: SourceList) {
                 break; // reabrimos con el dispositivo nuevo
             }
             let list = sources.read().clone();
-            let monitor = shared.mic_wanted.load(Ordering::Relaxed) && {
+            // El micro también hace sonar algo sin apps: en la escucha o en la retransmisión.
+            let mic_only = shared.mic_wanted.load(Ordering::Relaxed) && {
                 let s = shared.settings.read();
-                s.mic.enabled && s.mic.monitor
+                s.mic.enabled && (s.mic.monitor || s.stream_mic_gain() > 0.0)
             };
-            if list.is_empty() && !monitor {
+            if list.is_empty() && !mic_only {
                 if stream.take().is_some() {
                     shared.meters.master.store(0.0);
-                    for m in &shared.meters.channels {
+                    for m in shared.meters.channels.iter().chain(&shared.meters.stream_channels) {
                         m.store(0.0);
                     }
                 }
-                shared.idle.store(true, Ordering::Relaxed);
+                set_idle(&shared, true);
                 shared.out_wake.wait(Duration::from_secs(2));
                 continue;
             }
@@ -860,7 +942,7 @@ fn output_loop(shared: Arc<Shared>, sources: SourceList) {
                             src.fifo.clear();
                         }
                         stream = Some(s);
-                        shared.idle.store(false, Ordering::Relaxed);
+                        set_idle(&shared, false);
                     }
                     Err(e) => {
                         shared.status.write().output = trf!("No se pudo abrir la salida ({e:#}); reintentando…", "Couldn't open the output ({e:#}); retrying…");
@@ -873,6 +955,74 @@ fn output_loop(shared: Arc<Shared>, sources: SourceList) {
             if let Err(e) = out.write(50, |buf| mixer.render(buf, &shared, &list)) {
                 // Típico: AUDCLNT_E_DEVICE_INVALIDATED al desconectar los auriculares.
                 shared.status.write().output = trf!("Dispositivo perdido ({e:#}); reintentando…", "Device lost ({e:#}); retrying…");
+                thread::sleep(Duration::from_millis(500));
+                break;
+            }
+        }
+    }
+}
+
+/// Marca si el mezclador está en reposo y, si cambia, avisa a la retransmisión (que va a su ritmo).
+fn set_idle(shared: &Shared, idle: bool) {
+    if shared.idle.swap(idle, Ordering::Relaxed) != idle {
+        shared.stream_wake.wake();
+    }
+}
+
+/// Saca la mezcla de retransmisión por su dispositivo. El ritmo lo marcan los auriculares (el
+/// mezclador); este hilo lo lee de la cola, que absorbe la diferencia entre los dos relojes.
+/// Solo tiene la salida abierta mientras el mezclador trabaja: en reposo no gasta nada.
+fn stream_loop(shared: Arc<Shared>) {
+    let _com = ComGuard::init();
+    wasapi::boost_thread_priority();
+    let set_status = |text: String| {
+        if shared.status.read().stream != text {
+            shared.status.write().stream = text;
+        }
+    };
+    let sleep = |text: String, secs: u64| {
+        set_status(text);
+        shared.stream_out.clear();
+        shared.meters.stream.store(0.0);
+        shared.stream_wake.wait(Duration::from_secs(secs));
+    };
+    while !shared.quit.load(Ordering::Relaxed) {
+        let wanted = {
+            let s = shared.settings.read();
+            s.streamer.device.clone().filter(|_| s.stream_active())
+        };
+        let Some(id) = wanted else {
+            sleep(String::new(), 10);
+            continue;
+        };
+        if shared.paused.load(Ordering::Relaxed) || shared.idle.load(Ordering::Relaxed) {
+            sleep(tr!("En reposo: se activa en cuanto haya algo que retransmitir", "Idle: wakes up as soon as there's something to stream").into(), 10);
+            continue;
+        }
+        let opened = wasapi::get_device(Some(&id), eRender).and_then(|(dev, name, _)| Ok((RenderStream::open(&dev, 2)?, name)));
+        let (mut out, name) = match opened {
+            Ok(x) => x,
+            Err(e) => {
+                sleep(trf!("No se pudo abrir la salida de retransmisión ({e:#}); reintentando…", "Couldn't open the stream output ({e:#}); retrying…"), 2);
+                continue;
+            }
+        };
+        set_status(trf!("Retransmitiendo en: {name}", "Streaming to: {name}"));
+        shared.stream_out.clear();
+        let mut version = shared.version();
+        while !shared.quit.load(Ordering::Relaxed) && !shared.paused.load(Ordering::Relaxed) && !shared.idle.load(Ordering::Relaxed) {
+            let v = shared.version();
+            if v != version {
+                version = v;
+                let s = shared.settings.read();
+                if !s.stream_active() || s.streamer.device.as_deref() != Some(id.as_str()) {
+                    break;
+                }
+            }
+            if let Err(e) = out.write(50, |buf| {
+                shared.stream_out.pop_into(buf);
+            }) {
+                set_status(trf!("Salida de retransmisión perdida ({e:#}); reintentando…", "Stream output lost ({e:#}); retrying…"));
                 thread::sleep(Duration::from_millis(500));
                 break;
             }
@@ -895,6 +1045,37 @@ mod tests {
         assert!((channel_gain(&s, Channel::Media, true) - 1.9953).abs() < 1e-3);
         s.channel_mut(Channel::Media).muted = true;
         assert_eq!(channel_gain(&s, Channel::Media, true), 0.0);
+    }
+
+    #[test]
+    fn streamer_mode_applies_personal_volume_in_the_mixer() {
+        let mut s = Settings::default();
+        s.channel_mut(Channel::Media).volume = 0.25;
+        s.streamer.enabled = true;
+        s.streamer.device = Some("obs".into());
+        // El dispositivo está al 100 % en Windows: el volumen personal lo pone el mezclador.
+        assert_eq!(channel_gain(&s, Channel::Media, true), 0.25);
+        // Silenciar el canal para ti no lo quita de la retransmisión.
+        s.channel_mut(Channel::Media).muted = true;
+        assert_eq!(channel_gain(&s, Channel::Media, true), 0.0);
+        assert_eq!(s.stream_gain(Channel::Media), 1.0);
+    }
+
+    /// Mide lo que suena en una salida (captura en loopback) durante 3 s. Sirve para comprobar que la
+    /// mezcla de retransmisión llega a su dispositivo:
+    /// `$env:RUST_SONAR_PROBE_OUT="{id}"; cargo test --release -- --ignored probe_output_level --nocapture`
+    #[test]
+    #[ignore]
+    fn probe_output_level() {
+        let _com = ComGuard::init();
+        let id = std::env::var("RUST_SONAR_PROBE_OUT").expect("falta RUST_SONAR_PROBE_OUT con el ID de la salida");
+        let (dev, name, _) = wasapi::get_device(Some(&id), eRender).unwrap();
+        let mut cap = CaptureStream::loopback(&dev).unwrap();
+        let (mut scratch, mut max, t) = (Vec::new(), 0f32, Instant::now());
+        while t.elapsed() < Duration::from_secs(3) {
+            cap.read(100, &mut scratch, |x| max = max.max(peak(x))).unwrap();
+        }
+        println!("{name}: pico {:.1} dBFS", crate::dsp::lin_to_db(max));
     }
 
     #[test]

@@ -22,6 +22,7 @@ inglés**: sigue el idioma de Windows y se puede cambiar en *Ajustes → General
 | Configuración en un clic | «Configurar automáticamente» reparte los dispositivos virtuales, elige auriculares y micro reales y activa el micro virtual. |
 | Enrutado real por app | Al mover una app de canal, Windows cambia su salida (`IAudioPolicyConfigFactory`, la misma API que *Volumen de aplicaciones y preferencias de dispositivos*). Al cerrar se deshace. |
 | Volumen integrado con Windows | El volumen de un canal es el de su dispositivo en Windows: las teclas de volumen y el mezclador de Windows mueven el fader, y al revés. |
+| Modo streamer | Una segunda mezcla para tu público: cada canal y el micro tienen dos faders, *personal* (tus auriculares) y *retransmisión*, y la mezcla de retransmisión sale por su propio dispositivo para que la capture OBS. Silenciar un canal para ti no lo quita del directo, y al revés. API: `PATCH /api/streamer` y `PATCH /api/streamer/channels/{canal\|mic}`. |
 | Audio espacial | El 5.1/7.1 del dispositivo virtual se coloca alrededor de la cabeza con un modelo de cabeza esférica (Brown y Duda). |
 | Volumen inteligente y refuerzo | Compresor por canal (sube lo flojo, contiene lo fuerte) y hasta ±12 dB. |
 | Micrófono con IA | RNNoise (`nnnoiseless`), puerta por voz, puerta de ruido, EQ, compresor de voz y escucha propia. Solo se procesa mientras alguna app graba. |
@@ -29,7 +30,7 @@ inglés**: sigue el idioma de Windows y se puede cambiar en *Ajustes → General
 | Ecualizador paramétrico | Hasta 16 bandas por canal, presets y favoritos, curva de respuesta interactiva. |
 | Configuraciones de Sonar | Importa y exporta los enlaces de compartir de SteelSeries Sonar. |
 | Escritorio | Bandeja del sistema, inicio con Windows, instancia única, instalador propio. |
-| Atajos de teclado | Globales (`RegisterHotKey`) para silenciar el micro, todas las salidas o cada canal; por defecto Ctrl+Alt+M y Ctrl+Alt+S, se cambian en Ajustes. Funcionan en juegos y con la ventana cerrada. |
+| Atajos de teclado | Globales (`RegisterHotKey`) para silenciar el micro, todas las salidas o cada canal, y para subir o bajar el volumen personal y el de retransmisión; por defecto Ctrl+Alt+M y Ctrl+Alt+S, se cambian en Ajustes. Funcionan en juegos y con la ventana cerrada. |
 | Aviso en pantalla | Al silenciar o activar algo aparece una tarjeta encima de todo (juegos en ventana o sin bordes), transparente al ratón; esquina y duración configurables. |
 | API REST | `axum` en `127.0.0.1:7878` (Stream Deck, scripts, web). |
 | Idiomas | Español e inglés (`src/i18n.rs`, macros `tr!` y `trf!`). |

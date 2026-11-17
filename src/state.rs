@@ -28,6 +28,10 @@ pub struct Meters {
     pub mic_in: AtomicF32,
     pub mic_out: AtomicF32,
     pub mic_vad: AtomicF32,
+    /// Salida de la mezcla de retransmisión (modo streamer).
+    pub stream: AtomicF32,
+    /// Lo que manda cada canal a la retransmisión.
+    pub stream_channels: [AtomicF32; 4],
 }
 
 #[derive(Clone, Debug, Default, Serialize, serde::Deserialize)]
@@ -40,6 +44,10 @@ pub struct MetersSnapshot {
     pub mic_in: f32,
     pub mic_out: f32,
     pub mic_vad: f32,
+    #[serde(default)]
+    pub stream: f32,
+    #[serde(default)]
+    pub stream_channels: [f32; 4],
 }
 
 impl Meters {
@@ -53,6 +61,8 @@ impl Meters {
             mic_in: self.mic_in.load(),
             mic_out: self.mic_out.load(),
             mic_vad: self.mic_vad.load(),
+            stream: self.stream.load(),
+            stream_channels: [0, 1, 2, 3].map(|i| self.stream_channels[i].load()),
         }
     }
 
@@ -65,6 +75,10 @@ impl Meters {
         self.mic_in.store(m.mic_in);
         self.mic_out.store(m.mic_out);
         self.mic_vad.store(m.mic_vad);
+        self.stream.store(m.stream);
+        for (dst, v) in self.stream_channels.iter().zip(m.stream_channels) {
+            dst.store(v);
+        }
     }
 }
 
@@ -104,7 +118,10 @@ pub struct Status {
     pub conflict: Option<String>,
     /// Atajos que Windows no dejó registrar (otro programa ya usa esa combinación).
     #[serde(default)]
-    pub hotkey_conflicts: Vec<crate::config::MuteTarget>,
+    pub hotkey_conflicts: Vec<crate::config::HotkeyAction>,
+    /// Estado de la salida de retransmisión (modo streamer); vacío si está apagado.
+    #[serde(default)]
+    pub stream: String,
 }
 
 pub struct Shared {
@@ -129,6 +146,12 @@ pub struct Shared {
     pub active_mic: RwLock<Option<String>>,
     /// Micro procesado hacia el mezclador, para escucharse a uno mismo (mono).
     pub monitor: Fifo,
+    /// Micro procesado hacia la mezcla de retransmisión (mono).
+    pub stream_mic: Fifo,
+    /// Mezcla de retransmisión ya hecha (estéreo), del mezclador al hilo que la saca por su dispositivo.
+    pub stream_out: Fifo,
+    /// Despierta al hilo de la retransmisión (cambios de configuración, la salida se abre o se suelta).
+    pub stream_wake: Arc<Waker>,
     /// Despierta al hilo de sesiones (avisos de Windows, cambios desde la interfaz o la API).
     pub wake: Arc<Waker>,
     /// Despierta al mezclador cuando cambian las fuentes (para abrir o soltar la salida).
@@ -172,6 +195,10 @@ impl Shared {
             active_output: RwLock::new(None),
             active_mic: RwLock::new(None),
             monitor: Fifo::new(1, crate::config::SAMPLE_RATE as usize * 20 / 1000),
+            stream_mic: Fifo::new(1, crate::config::SAMPLE_RATE as usize * 20 / 1000),
+            // Dos relojes distintos (auriculares y salida de retransmisión): algo más de colchón.
+            stream_out: Fifo::new(2, crate::config::SAMPLE_RATE as usize * 30 / 1000),
+            stream_wake: Default::default(),
             wake: Default::default(),
             out_wake: Default::default(),
             mic_wake: Default::default(),
@@ -203,6 +230,7 @@ impl Shared {
         self.wake.wake();
         self.out_wake.wake();
         self.mic_wake.wake();
+        self.stream_wake.wake();
         // Atajos y aviso en pantalla (si algo se ha silenciado o activado, lo anuncia).
         if !self.mirror {
             crate::overlay::changed();

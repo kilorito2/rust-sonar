@@ -250,6 +250,19 @@ pub const DEVICE_ADMIN_FLAG: &str = "--device-admin";
 
 /// Relanza este ejecutable como administrador (aparece el aviso de UAC una sola vez) para aplicar
 /// todos los cambios.
+/// Aplica los cambios aquí mismo si ya somos administrador (p. ej. lanzados por el instalador) o,
+/// si no, relanzándonos como administrador (un aviso de Windows).
+pub fn apply_device_changes(changes: &[DeviceChange]) -> Result<()> {
+    if !crate::system::is_elevated() {
+        return apply_device_changes_elevated(changes);
+    }
+    let args: Vec<String> = changes.iter().map(DeviceChange::to_arg).collect();
+    match run_device_admin_helper(&args) {
+        0 => Ok(()),
+        n => Err(anyhow!(trf!("fallaron {n} de {} cambios", "{n} of {} changes failed", changes.len()))),
+    }
+}
+
 pub fn apply_device_changes_elevated(changes: &[DeviceChange]) -> Result<()> {
     if changes.is_empty() {
         return Ok(());

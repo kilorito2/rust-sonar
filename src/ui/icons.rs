@@ -44,3 +44,6 @@ pub const CARET_DOUBLE_RIGHT: &str = "\u{e12a}";
 pub const WIN_MINIMIZE: &str = "\u{e32a}"; // minus
 pub const WIN_MAXIMIZE: &str = "\u{e45e}"; // square
 pub const WIN_RESTORE: &str = "\u{e1cc}"; // copy-simple
+/// speaker-low / speaker-high: atajos de bajar y subir volumen.
+pub const SPEAKER_DOWN: &str = "\u{e44c}";
+pub const SPEAKER_UP: &str = "\u{e44a}";

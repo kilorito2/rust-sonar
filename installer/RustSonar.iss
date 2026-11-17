@@ -11,7 +11,7 @@
 ; tal cual) y se comprueba su SHA-256. Así el instalador se puede distribuir.
 
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "0.2.0"
 #endif
 #define AppName "Rust Sonar"
 #define AppExe "rust_sonar.exe"
@@ -78,6 +78,8 @@ en.StatusHifi=Installing Hi-Fi Cable (Game channel)... If Windows asks about the
 es.StatusHifi=Instalando Hi-Fi Cable (canal Juego)... Si Windows pregunta por el driver, pulsa Instalar.
 en.StatusVm=Installing Voicemeeter (Chat, Media and Aux channels): press "Install" in its window, then OK.
 es.StatusVm=Instalando Voicemeeter (canales Chat, Media y Aux): pulsa «Install» en su ventana y después OK.
+en.StatusTidy=Setting up the audio devices (Windows will only show Rust Sonar's)...
+es.StatusTidy=Configurando los dispositivos de audio (en Windows solo quedarán los de Rust Sonar)...
 
 [Tasks]
 Name: "drivers"; Description: "{cm:TaskDrivers}"; GroupDescription: "{cm:GroupDevices}"
@@ -108,6 +110,11 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Filename: "{tmp}\drivers\vbcable\VBCABLE_Setup_x64.exe"; Parameters: "-i -h"; WorkingDir: "{tmp}\drivers\vbcable"; StatusMsg: "{cm:StatusCable}"; Flags: waituntilterminated; Tasks: drivers; Check: DriverMissing('VBAudioVACMME'); AfterInstall: DriverInstalled
 Filename: "{tmp}\drivers\hificable\HiFiCableAsioBridgeSetup.exe"; Parameters: "-i -h"; WorkingDir: "{tmp}\drivers\hificable"; StatusMsg: "{cm:StatusHifi}"; Flags: waituntilterminated; Tasks: drivers; Check: DriverMissing('VBAudioHFVAIOMME'); AfterInstall: DriverInstalled
 Filename: "{tmp}\drivers\voicemeeter\Voicemeeter8Setup.exe"; WorkingDir: "{tmp}\drivers\voicemeeter"; StatusMsg: "{cm:StatusVm}"; Flags: waituntilterminated; Tasks: drivers; Check: DriverMissing('VBVoicemeeterVAIOMME'); AfterInstall: DriverInstalled
+; Con los cables ya activos (sin drivers nuevos), se configura y ordena aquí mismo, aprovechando que el
+; instalador ya es administrador: Windows se queda solo con «Rust Sonar - Juego», «- Chat»… y sin
+; preguntar nada. Con drivers recién instalados hay que reiniciar antes; lo hará la app en su primer
+; arranque (con un aviso de administrador).
+Filename: "{app}\{#AppExe}"; Parameters: "--setup-devices"; StatusMsg: "{cm:StatusTidy}"; Flags: waituntilterminated runhidden; Check: not NeedRestart
 ; Sin drivers nuevos no hace falta reiniciar: se ofrece abrir la app (como el usuario, no como administrador).
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: not NeedRestart
 

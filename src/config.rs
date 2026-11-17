@@ -430,6 +430,43 @@ impl Default for MicSettings {
     }
 }
 
+/// Envío de un canal (o del micro) a la mezcla de retransmisión.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StreamSend {
+    pub volume: f32,
+    pub muted: bool,
+}
+
+impl Default for StreamSend {
+    fn default() -> Self {
+        Self { volume: 1.0, muted: false }
+    }
+}
+
+/// Modo streamer: además de la mezcla personal (la de tus auriculares) hay una segunda mezcla, la
+/// de retransmisión, con su propio volumen por canal. Sale por otro dispositivo (normalmente un
+/// cable virtual) que OBS o el programa de directo captura como fuente de audio.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StreamerSettings {
+    pub enabled: bool,
+    /// Salida de la mezcla de retransmisión (ID WASAPI). None = sin mezcla de retransmisión.
+    pub device: Option<String>,
+    /// Volumen general de la mezcla de retransmisión.
+    pub volume: f32,
+    pub muted: bool,
+    pub channels: [StreamSend; 4],
+    /// El micro procesado en la retransmisión (lo que oye tu público de tu voz).
+    pub mic: StreamSend,
+}
+
+impl Default for StreamerSettings {
+    fn default() -> Self {
+        Self { enabled: false, device: None, volume: 1.0, muted: false, channels: Default::default(), mic: StreamSend::default() }
+    }
+}
+
 /// Lo que se puede silenciar con un atajo (y lo que anuncia el aviso en pantalla).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MuteTarget {
@@ -437,16 +474,19 @@ pub enum MuteTarget {
     /// Todas las salidas (el master).
     Master,
     Channel(Channel),
+    /// La mezcla de retransmisión entera (modo streamer).
+    Stream,
 }
 
 impl MuteTarget {
-    pub const ALL: [MuteTarget; 6] = [
+    pub const ALL: [MuteTarget; 7] = [
         MuteTarget::Mic,
         MuteTarget::Master,
         MuteTarget::Channel(Channel::Game),
         MuteTarget::Channel(Channel::Chat),
         MuteTarget::Channel(Channel::Media),
         MuteTarget::Channel(Channel::Aux),
+        MuteTarget::Stream,
     ];
 
     pub fn index(self) -> usize {
@@ -454,6 +494,7 @@ impl MuteTarget {
             MuteTarget::Mic => 0,
             MuteTarget::Master => 1,
             MuteTarget::Channel(ch) => 2 + ch.index(),
+            MuteTarget::Stream => 6,
         }
     }
 
@@ -462,6 +503,7 @@ impl MuteTarget {
             MuteTarget::Mic => tr!("Micrófono", "Microphone"),
             MuteTarget::Master => tr!("Todas las salidas", "All outputs"),
             MuteTarget::Channel(ch) => ch.label(),
+            MuteTarget::Stream => tr!("Mezcla de retransmisión", "Stream mix"),
         }
     }
 
@@ -470,6 +512,7 @@ impl MuteTarget {
             MuteTarget::Mic => s.mic.muted,
             MuteTarget::Master => s.master_muted,
             MuteTarget::Channel(ch) => s.channel(ch).muted,
+            MuteTarget::Stream => s.streamer.muted,
         }
     }
 
@@ -479,6 +522,7 @@ impl MuteTarget {
             MuteTarget::Mic => s.mic.volume,
             MuteTarget::Master => s.master_volume,
             MuteTarget::Channel(ch) => s.channel(ch).volume,
+            MuteTarget::Stream => s.streamer.volume,
         }
     }
 
@@ -487,8 +531,73 @@ impl MuteTarget {
             MuteTarget::Mic => &mut s.mic.muted,
             MuteTarget::Master => &mut s.master_muted,
             MuteTarget::Channel(ch) => &mut s.channel_mut(ch).muted,
+            MuteTarget::Stream => &mut s.streamer.muted,
         };
         *m = !*m;
+    }
+}
+
+/// Todo lo que se puede hacer con un atajo: silenciar algo o subir/bajar el volumen general de una
+/// mezcla (la personal es el Master; la de retransmisión, la del modo streamer).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum HotkeyAction {
+    Mute(MuteTarget),
+    Volume { stream: bool, up: bool },
+}
+
+impl HotkeyAction {
+    /// Paso de volumen de los atajos (5 %).
+    pub const VOLUME_STEP: f32 = 0.05;
+
+    pub fn all() -> impl Iterator<Item = HotkeyAction> {
+        MuteTarget::ALL.into_iter().map(HotkeyAction::Mute).chain(
+            [(false, false), (false, true), (true, false), (true, true)].into_iter().map(|(stream, up)| HotkeyAction::Volume { stream, up }),
+        )
+    }
+
+    /// Identificador para `RegisterHotKey` (1 … 11).
+    pub fn id(self) -> i32 {
+        match self {
+            HotkeyAction::Mute(t) => t.index() as i32 + 1,
+            HotkeyAction::Volume { stream, up } => 8 + 2 * stream as i32 + up as i32,
+        }
+    }
+
+    pub fn from_id(id: i32) -> Option<HotkeyAction> {
+        Self::all().find(|a| a.id() == id)
+    }
+
+    /// Solo tiene sentido con el modo streamer activado.
+    pub fn streamer_only(self) -> bool {
+        matches!(self, HotkeyAction::Mute(MuteTarget::Stream) | HotkeyAction::Volume { stream: true, .. })
+    }
+
+    /// Lo hace. Devuelve qué anunciar en pantalla si es un cambio de volumen (los silencios los
+    /// anuncia solo el aviso al ver que han cambiado).
+    pub fn run(self, s: &mut Settings) -> Option<MuteTarget> {
+        match self {
+            HotkeyAction::Mute(t) => {
+                t.toggle(s);
+                None
+            }
+            HotkeyAction::Volume { stream, up } => {
+                let (v, m, t) = if stream {
+                    (&mut s.streamer.volume, &mut s.streamer.muted, MuteTarget::Stream)
+                } else {
+                    (&mut s.master_volume, &mut s.master_muted, MuteTarget::Master)
+                };
+                // Al siguiente múltiplo del paso (73 % → 75 % al subir, → 70 % al bajar), para que
+                // los valores queden redondos.
+                let steps = *v / Self::VOLUME_STEP;
+                let next = if up { (steps + 1e-3).floor() + 1.0 } else { (steps - 1e-3).ceil() - 1.0 };
+                *v = (next * Self::VOLUME_STEP).clamp(0.0, 1.0);
+                // Subir el volumen de algo silenciado lo vuelve a activar, como las teclas de Windows.
+                if up {
+                    *m = false;
+                }
+                Some(t)
+            }
+        }
     }
 }
 
@@ -512,49 +621,67 @@ impl Hotkey {
     }
 }
 
-/// Un atajo por cada `MuteTarget` (None = sin atajo).
+/// Un atajo por cada acción (None = sin atajo).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Hotkeys {
     pub mic: Option<Hotkey>,
     pub master: Option<Hotkey>,
     pub channels: [Option<Hotkey>; 4],
+    /// Silenciar la mezcla de retransmisión.
+    pub stream: Option<Hotkey>,
+    /// Volumen: personal bajar, personal subir, retransmisión bajar, retransmisión subir.
+    pub volume: [Option<Hotkey>; 4],
 }
 
 impl Default for Hotkeys {
     fn default() -> Self {
-        Self { mic: Some(Hotkey::ctrl_alt("M")), master: Some(Hotkey::ctrl_alt("S")), channels: Default::default() }
+        Self {
+            mic: Some(Hotkey::ctrl_alt("M")),
+            master: Some(Hotkey::ctrl_alt("S")),
+            channels: Default::default(),
+            stream: None,
+            volume: Default::default(),
+        }
     }
 }
 
 impl Hotkeys {
-    pub fn get(&self, t: MuteTarget) -> Option<&Hotkey> {
-        match t {
-            MuteTarget::Mic => self.mic.as_ref(),
-            MuteTarget::Master => self.master.as_ref(),
-            MuteTarget::Channel(ch) => self.channels[ch.index()].as_ref(),
+    pub fn get(&self, a: HotkeyAction) -> Option<&Hotkey> {
+        self.slot(a).as_ref()
+    }
+
+    fn slot(&self, a: HotkeyAction) -> &Option<Hotkey> {
+        match a {
+            HotkeyAction::Mute(MuteTarget::Mic) => &self.mic,
+            HotkeyAction::Mute(MuteTarget::Master) => &self.master,
+            HotkeyAction::Mute(MuteTarget::Channel(ch)) => &self.channels[ch.index()],
+            HotkeyAction::Mute(MuteTarget::Stream) => &self.stream,
+            HotkeyAction::Volume { stream, up } => &self.volume[2 * stream as usize + up as usize],
         }
     }
 
-    pub fn get_mut(&mut self, t: MuteTarget) -> &mut Option<Hotkey> {
-        match t {
-            MuteTarget::Mic => &mut self.mic,
-            MuteTarget::Master => &mut self.master,
-            MuteTarget::Channel(ch) => &mut self.channels[ch.index()],
+    pub fn get_mut(&mut self, a: HotkeyAction) -> &mut Option<Hotkey> {
+        match a {
+            HotkeyAction::Mute(MuteTarget::Mic) => &mut self.mic,
+            HotkeyAction::Mute(MuteTarget::Master) => &mut self.master,
+            HotkeyAction::Mute(MuteTarget::Channel(ch)) => &mut self.channels[ch.index()],
+            HotkeyAction::Mute(MuteTarget::Stream) => &mut self.stream,
+            HotkeyAction::Volume { stream, up } => &mut self.volume[2 * stream as usize + up as usize],
         }
     }
 
-    /// Asigna `key` a `t` y se lo quita a cualquier otra acción que lo tuviera (no puede haber dos
+    /// Asigna `key` a `a` y se lo quita a cualquier otra acción que lo tuviera (no puede haber dos
     /// acciones en la misma combinación).
-    pub fn assign(&mut self, t: MuteTarget, key: Option<Hotkey>) {
+    pub fn assign(&mut self, a: HotkeyAction, key: Option<Hotkey>) {
         if let Some(k) = &key {
-            for other in MuteTarget::ALL {
-                if other != t && self.get(other) == Some(k) {
+            for other in HotkeyAction::all() {
+                if other != a && self.get(other) == Some(k) {
                     *self.get_mut(other) = None;
                 }
             }
         }
-        *self.get_mut(t) = key;
+        *self.get_mut(a) = key;
     }
 }
 
@@ -640,6 +767,10 @@ pub struct Settings {
     pub hotkeys: Hotkeys,
     /// Aviso en pantalla al silenciar o activar algo.
     pub overlay: OverlaySettings,
+    /// Modo streamer: segunda mezcla para la retransmisión.
+    pub streamer: StreamerSettings,
+    /// Ya se ordenaron solos los dispositivos de Windows tras la primera configuración (se hace una vez).
+    pub devices_tidied: bool,
 }
 
 pub const DEFAULT_IGNORED: [&str; 4] = ["audiodg", "steelseriessonar", "steelseriesgg", "rust_sonar"];
@@ -670,6 +801,8 @@ impl Default for Settings {
             language: crate::i18n::Language::Auto,
             hotkeys: Hotkeys::default(),
             overlay: OverlaySettings::default(),
+            streamer: StreamerSettings::default(),
+            devices_tidied: false,
         }
     }
 }
@@ -760,12 +893,13 @@ impl Settings {
         }
     }
 
-    /// IDs de todos los dispositivos que no son la salida real (canales, envío del micro y salida
-    /// silenciosa).
+    /// IDs de todos los dispositivos que no son la salida real (canales, envío del micro, salida
+    /// silenciosa y salida de la retransmisión).
     pub fn virtual_device_ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = self.channels.iter().filter_map(|c| c.device.clone()).collect();
         ids.extend(self.mic.output_device.clone());
         ids.extend(self.sink_device.clone());
+        ids.extend(self.streamer.device.clone());
         ids
     }
 
@@ -781,10 +915,37 @@ impl Settings {
         }
         if let Some(out_dev) = &self.output_device {
             if ids.contains(out_dev) {
-                out.push(tr!("La salida (auriculares) no puede ser un dispositivo virtual ni la salida silenciosa.", "The output (headphones) can't be a virtual device or the silent output.").into());
+                out.push(tr!("La salida (auriculares) no puede ser un dispositivo virtual, la salida silenciosa ni la de retransmisión.", "The output (headphones) can't be a virtual device, the silent output or the stream output.").into());
             }
         }
         out
+    }
+
+    /// El modo streamer está activado y su mezcla tiene por dónde salir.
+    pub fn stream_active(&self) -> bool {
+        self.streamer.enabled && self.streamer.device.is_some()
+    }
+
+    /// Ganancia de un canal en la mezcla de retransmisión. El ChatMix no cuenta (es para lo que oyes
+    /// tú); la ganancia del canal sí, porque es parte del sonido del canal.
+    pub fn stream_gain(&self, ch: Channel) -> f32 {
+        let send = &self.streamer.channels[ch.index()];
+        if !self.stream_active() || send.muted {
+            return 0.0;
+        }
+        send.volume * crate::dsp::db_to_lin(self.channel(ch).boost_db.clamp(-12.0, 12.0))
+    }
+
+    /// Volumen general de la mezcla de retransmisión.
+    pub fn stream_master_gain(&self) -> f32 {
+        if !self.stream_active() || self.streamer.muted { 0.0 } else { self.streamer.volume }
+    }
+
+    /// Ganancia del micro en la retransmisión (va después de su volumen y su silencio: silenciar el
+    /// micro lo silencia también en el directo).
+    pub fn stream_mic_gain(&self) -> f32 {
+        let send = &self.streamer.mic;
+        if !self.stream_active() || !self.mic.enabled || send.muted { 0.0 } else { send.volume }
     }
 
     pub fn is_ignored(&self, exe: &str) -> bool {
@@ -915,13 +1076,72 @@ mod tests {
     fn hotkey_assign_moves_combination() {
         let mut h = Hotkeys::default();
         let mic = h.mic.clone();
-        h.assign(MuteTarget::Channel(Channel::Chat), mic.clone());
+        let chat = HotkeyAction::Mute(MuteTarget::Channel(Channel::Chat));
+        h.assign(chat, mic.clone());
         assert_eq!(h.mic, None);
-        assert_eq!(h.get(MuteTarget::Channel(Channel::Chat)), mic.as_ref());
+        assert_eq!(h.get(chat), mic.as_ref());
+        // También entre silencios y volumen.
+        let up = HotkeyAction::Volume { stream: true, up: true };
+        h.assign(up, mic.clone());
+        assert_eq!(h.get(chat), None);
+        assert_eq!(h.volume[3], mic);
         let mut s = Settings::default();
         MuteTarget::Channel(Channel::Aux).toggle(&mut s);
         assert!(MuteTarget::Channel(Channel::Aux).is_muted(&s));
         assert!(!MuteTarget::Mic.is_muted(&s));
+    }
+
+    #[test]
+    fn hotkey_ids_are_unique_and_roundtrip() {
+        let ids: Vec<i32> = HotkeyAction::all().map(HotkeyAction::id).collect();
+        assert_eq!(ids.len(), 11);
+        for (i, id) in ids.iter().enumerate() {
+            assert!(!ids[..i].contains(id));
+            assert_eq!(HotkeyAction::from_id(*id).map(HotkeyAction::id), Some(*id));
+        }
+    }
+
+    #[test]
+    fn volume_hotkeys_step_and_unmute() {
+        let mut s = Settings { master_volume: 0.73, master_muted: true, ..Default::default() };
+        let t = HotkeyAction::Volume { stream: false, up: true }.run(&mut s);
+        assert_eq!(t, Some(MuteTarget::Master));
+        assert!((s.master_volume - 0.75).abs() < 1e-6);
+        assert!(!s.master_muted);
+        s.streamer.volume = 0.02;
+        HotkeyAction::Volume { stream: true, up: false }.run(&mut s);
+        assert_eq!(s.streamer.volume, 0.0);
+        assert!((s.master_volume - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn stream_gains_need_streamer_mode_and_device() {
+        let mut s = Settings::default();
+        s.streamer.channels[Channel::Media.index()].volume = 0.5;
+        assert_eq!(s.stream_gain(Channel::Media), 0.0);
+        s.streamer.enabled = true;
+        assert_eq!(s.stream_gain(Channel::Media), 0.0, "sin dispositivo no hay retransmisión");
+        s.streamer.device = Some("obs".into());
+        assert_eq!(s.stream_gain(Channel::Media), 0.5);
+        // El ChatMix no toca la retransmisión.
+        s.chatmix = 1.0;
+        assert_eq!(s.stream_gain(Channel::Game), 1.0);
+        s.streamer.channels[Channel::Game.index()].muted = true;
+        assert_eq!(s.stream_gain(Channel::Game), 0.0);
+        assert_eq!(s.stream_mic_gain(), 0.0, "micro apagado");
+        s.mic.enabled = true;
+        assert_eq!(s.stream_mic_gain(), 1.0);
+        // La salida de retransmisión cuenta como dispositivo no real.
+        assert!(s.virtual_device_ids().contains(&"obs".to_string()));
+    }
+
+    #[test]
+    fn old_config_without_streamer_loads() {
+        let json = r#"{"master_volume":0.5,"hotkeys":{"mic":{"ctrl":true,"alt":true,"key":"M"}}}"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        assert!(!s.streamer.enabled);
+        assert_eq!(s.streamer.volume, 1.0);
+        assert_eq!(s.hotkeys.volume, [None, None, None, None]);
     }
 
     #[test]

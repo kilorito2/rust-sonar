@@ -23,6 +23,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Argumento con el que se abre solo la ventana (proceso aparte del motor).
 pub const UI_FLAG: &str = "--ui";
+/// Lo lanza el instalador (ya como administrador): configura y ordena los dispositivos de audio.
+pub const SETUP_DEVICES_FLAG: &str = "--setup-devices";
 const ENGINE_MUTEX: PCWSTR = w!("Local\\RustSonarSingleInstance");
 
 /// Devuelve false si ya hay otro motor de Rust Sonar abierto.
@@ -167,4 +169,39 @@ pub fn close_steelseries() -> Result<String> {
         bail!(trf!("no se pudo cerrar SteelSeries GG; ciérralo desde su icono de la bandeja", "couldn't close SteelSeries GG; close it from its tray icon"));
     }
     Ok(tr!("SteelSeries GG cerrado. Para que no vuelva a abrirse solo, desactiva su inicio con Windows.", "SteelSeries GG closed. To stop it reopening by itself, turn off its start with Windows.").into())
+}
+
+/// ¿Este proceso tiene permisos de administrador (elevado)? Entonces los cambios de dispositivos se
+/// hacen aquí mismo, sin pedir otro aviso de Windows.
+pub fn is_elevated() -> bool {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return false;
+        }
+        let mut elevation = TOKEN_ELEVATION::default();
+        let mut len = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(&mut elevation as *mut TOKEN_ELEVATION as *mut _),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut len,
+        )
+        .is_ok();
+        let _ = CloseHandle(token);
+        ok && elevation.TokenIsElevated != 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Los tests no se lanzan como administrador: los cambios de dispositivos pedirían el aviso.
+    #[test]
+    fn normal_process_is_not_elevated() {
+        assert!(!super::is_elevated());
+    }
 }

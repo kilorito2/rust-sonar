@@ -4,7 +4,7 @@
 //! así sigue respondiendo aunque la ventana esté oculta.
 //!
 //! - Clic: muestra la ventana.
-//! - Clic derecho: menú (abrir, silenciar micro, silenciar todo, salir).
+//! - Clic derecho: menú (abrir, silenciar micro, silenciar todo, modo streamer, salir).
 
 use crate::state::Shared;
 use crate::system;
@@ -22,6 +22,7 @@ const TRAY_ID: u32 = 1;
 const CMD_OPEN: usize = 1;
 const CMD_MUTE_MIC: usize = 2;
 const CMD_MUTE_ALL: usize = 3;
+const CMD_STREAMER: usize = 4;
 const CMD_QUIT: usize = 9;
 
 static SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
@@ -139,9 +140,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
 unsafe fn show_menu(hwnd: HWND) {
     let Some(shared) = SHARED.get() else { return };
-    let (mic_muted, all_muted) = {
+    let (mic_muted, all_muted, streamer) = {
         let s = shared.settings.read();
-        (s.mic.muted, s.master_muted)
+        (s.mic.muted, s.master_muted, s.streamer.enabled)
     };
     let check = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
     unsafe {
@@ -149,11 +150,13 @@ unsafe fn show_menu(hwnd: HWND) {
         let open = HSTRING::from(tr!("Abrir Rust Sonar", "Open Rust Sonar"));
         let mute_mic = HSTRING::from(tr!("Silenciar micrófono", "Mute microphone"));
         let mute_all = HSTRING::from(tr!("Silenciar todo", "Mute all"));
+        let streamer_text = HSTRING::from(tr!("Modo streamer", "Streamer mode"));
         let quit = HSTRING::from(tr!("Salir", "Quit"));
         let _ = AppendMenuW(menu, MF_STRING, CMD_OPEN, PCWSTR(open.as_ptr()));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING | check(mic_muted), CMD_MUTE_MIC, PCWSTR(mute_mic.as_ptr()));
         let _ = AppendMenuW(menu, MF_STRING | check(all_muted), CMD_MUTE_ALL, PCWSTR(mute_all.as_ptr()));
+        let _ = AppendMenuW(menu, MF_STRING | check(streamer), CMD_STREAMER, PCWSTR(streamer_text.as_ptr()));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, CMD_QUIT, PCWSTR(quit.as_ptr()));
         let _ = SetMenuDefaultItem(menu, CMD_OPEN as u32, 0);
@@ -174,6 +177,7 @@ fn on_command(cmd: usize) {
         CMD_OPEN => system::open_ui(),
         CMD_MUTE_MIC => shared.update(|s| s.mic.muted = !s.mic.muted),
         CMD_MUTE_ALL => shared.update(|s| s.master_muted = !s.master_muted),
+        CMD_STREAMER => shared.update(|s| s.streamer.enabled = !s.streamer.enabled),
         CMD_QUIT => crate::request_quit(shared),
         _ => {}
     }

@@ -105,7 +105,7 @@ pub struct SonarApp {
     /// En Ajustes, ofrecer todos los dispositivos y no solo los virtuales.
     show_all_devices: bool,
     /// Acción cuyo atajo se está grabando (esperando a que se pulse la combinación).
-    capturing: Option<crate::config::MuteTarget>,
+    capturing: Option<crate::config::HotkeyAction>,
     /// Aviso mientras se graba (p. ej. «hace falta Ctrl o Alt»).
     capture_hint: Option<&'static str>,
 }
@@ -252,7 +252,7 @@ impl eframe::App for SonarApp {
         self.shared.ui_wants_mic.store(mic_tab && !minimized, std::sync::atomic::Ordering::Relaxed);
         if !minimized {
             let m = self.shared.meters.snapshot();
-            let moving = [m.game, m.chat, m.media, m.aux, m.master, m.mic_in, m.mic_out].iter().any(|v| *v > 0.0005)
+            let moving = [m.game, m.chat, m.media, m.aux, m.master, m.mic_in, m.mic_out, m.stream].iter().any(|v| *v > 0.0005)
                 || self.meters.values().any(|v| *v > 0.0);
             ui.ctx().request_repaint_after(Duration::from_millis(if moving { 33 } else { 250 }));
         }
@@ -368,6 +368,45 @@ impl SonarApp {
                 self.view = view;
             }
         }
+
+        // Modo streamer, como en el menú de Sonar.
+        ui.add_space(14.0);
+        let mut on = s.streamer.enabled;
+        let tip = tr!(
+            "Dos mezclas: la personal (tus auriculares) y la de retransmisión (lo que oye tu público en OBS), cada una con sus volúmenes",
+            "Two mixes: the personal one (your headphones) and the stream one (what your audience hears in OBS), each with its own volumes"
+        );
+        if collapsed {
+            ui.vertical_centered(|ui| {
+                let label = if on { tr!("Modo streamer: activado", "Streamer mode: on") } else { tr!("Modo streamer: desactivado", "Streamer mode: off") };
+                if widgets::icon_button(ui, icons::BROADCAST, &format!("{label}
+{tip}"), on, STREAM).clicked() {
+                    on = !on;
+                }
+            });
+        } else {
+            let r = egui::Frame::new()
+                .fill(if on { STREAM.gamma_multiply(0.10) } else { SURFACE })
+                .stroke(Stroke::new(1.0, if on { STREAM.gamma_multiply(0.45) } else { BORDER }))
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(Margin::symmetric(8, 8))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.label(RichText::new(icons::BROADCAST).font(theme::icon(16.0)).color(if on { STREAM } else { TEXT_2 }));
+                        // El interruptor primero (a la derecha) y el texto en lo que quede, recortado si no cabe.
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            widgets::toggle(ui, &mut on);
+                            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                widgets::truncated(ui, RichText::new(tr!("Modo streamer", "Streamer mode")).font(medium(12.5)).color(TEXT));
+                            });
+                        });
+                    });
+                })
+                .response;
+            r.on_hover_text(tip);
+        }
+        s.streamer.enabled = on;
 
         {
             let status = self.shared.status.read().clone();

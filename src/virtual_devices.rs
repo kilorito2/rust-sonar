@@ -293,6 +293,9 @@ pub fn rename_plan(s: &Settings, outputs: &[DeviceInfo], inputs: &[DeviceInfo]) 
 pub fn hide_plan(s: &Settings, outputs: &[DeviceInfo], inputs: &[DeviceInfo]) -> Vec<String> {
     let mut keep = s.virtual_device_ids();
     keep.extend(virtual_mic_input(s, outputs, inputs));
+    // Si la retransmisión sale por un cable virtual, OBS la captura por su pareja de entrada.
+    let stream_out = s.streamer.device.as_ref().and_then(|id| outputs.iter().find(|d| &d.id == id));
+    keep.extend(stream_out.and_then(|d| paired_input(d, inputs)).map(|d| d.id.clone()));
     keep.extend(outputs.iter().filter(|d| !is_virtual_cable(&d.name)).map(|d| d.id.clone()));
     let real_mic = s.mic.input_device.as_ref().filter(|id| inputs.iter().any(|d| &d.id == *id && !is_virtual_cable(&d.name)));
     match real_mic {
@@ -318,7 +321,7 @@ pub fn tidy_windows_devices(shared: &crate::state::Shared) -> anyhow::Result<Str
     let mut changes: Vec<DeviceChange> =
         renames.iter().map(|(id, name)| DeviceChange::Rename { id: id.clone(), name: name.clone() }).collect();
     changes.extend(hides.iter().cloned().map(DeviceChange::Hide));
-    crate::audio::routing::apply_device_changes_elevated(&changes)?;
+    crate::audio::routing::apply_device_changes(&changes)?;
     shared.update(|s| {
         // Nombre de fábrica de lo que acabamos de renombrar (si no lo teníamos ya), para el desinstalador.
         for (id, _) in &renames {
@@ -341,7 +344,7 @@ pub fn show_hidden_devices(shared: &crate::state::Shared) -> anyhow::Result<Stri
     use crate::audio::routing::DeviceChange;
     let hidden = shared.snapshot().hidden_devices;
     let changes: Vec<DeviceChange> = hidden.iter().cloned().map(DeviceChange::Show).collect();
-    crate::audio::routing::apply_device_changes_elevated(&changes)?;
+    crate::audio::routing::apply_device_changes(&changes)?;
     shared.update(|s| s.hidden_devices.clear());
     Ok(trf!("{} dispositivos vuelven a verse en Windows.", "{} devices are visible in Windows again.", hidden.len()))
 }
@@ -431,6 +434,49 @@ pub fn first_run_setup(shared: &crate::state::Shared) -> anyhow::Result<Option<S
         })
         .map_err(anyhow::Error::msg)?;
     Ok(Some(summary))
+}
+
+/// Recién configurado, Windows enseña todos los dispositivos de VB-Audio (Voicemeeter solo trae
+/// docenas) y no se sabe cuáles son los buenos. Una sola vez, nada más configurarse, se ordenan solos:
+/// los de Rust Sonar con su nombre y el resto ocultos. Necesita administrador: si no lo somos, sale
+/// un aviso de Windows (una vez; si se cancela, queda el botón en Ajustes).
+pub fn tidy_once(shared: &crate::state::Shared) {
+    let s = shared.snapshot();
+    if s.devices_tidied || Role::ALL.iter().all(|r| r.get(&s).is_none()) {
+        return;
+    }
+    // Quien ya ordenó a mano (antes de existir esta opción) no tiene que volver a hacerlo.
+    if s.hidden_devices.is_empty() {
+        match tidy_windows_devices(shared) {
+            Ok(msg) => println!("[dispositivos] {msg}"),
+            Err(e) => eprintln!("[dispositivos] no se ordenaron: {e:#}"),
+        }
+    }
+    shared.update(|s| s.devices_tidied = true);
+}
+
+/// `rust_sonar.exe --setup-devices`, que lanza el instalador con permisos de administrador al
+/// terminar: configura los dispositivos virtuales y los ordena sin ningún aviso más. Si los drivers
+/// se acaban de instalar y aún no existen los dispositivos (hay que reiniciar), no hace nada: lo
+/// hará la app en su primer arranque.
+pub fn setup_devices_cli() -> i32 {
+    let _com = crate::audio::wasapi::ComGuard::init();
+    let shared = crate::state::Shared::new(Settings::load());
+    let code = match first_run_setup(&shared) {
+        Ok(summary) => {
+            if let Some(summary) = summary {
+                println!("[configuración inicial] {summary}");
+            }
+            tidy_once(&shared);
+            0
+        }
+        Err(e) => {
+            eprintln!("[configuración inicial] {e:#}");
+            1
+        }
+    };
+    shared.save_if_dirty();
+    code
 }
 
 #[cfg(test)]
@@ -644,5 +690,21 @@ mod tests {
         assert!(plan.contains(&("c0".into(), "Rust Sonar - Juego".into())));
         assert!(plan.contains(&("cd".into(), "Rust Sonar - Envío micro".into())));
         assert!(plan.contains(&("in-d".into(), mic_capture_name().into())));
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    #[test]
+    fn hide_plan_keeps_the_stream_cable_pair_for_obs() {
+        let d = |id: &str, name: &str| DeviceInfo { id: id.into(), name: name.into() };
+        let outs = vec![d("hs", "Altavoces (Headset)"), d("a-in", "CABLE-A Input (VB-Audio Cable A)")];
+        let ins = vec![d("a-out", "CABLE-A Output (VB-Audio Cable A)")];
+        let mut s = Settings::default();
+        assert_eq!(hide_plan(&s, &outs, &ins), ["a-in", "a-out"]);
+        s.streamer.device = Some("a-in".into());
+        assert!(hide_plan(&s, &outs, &ins).is_empty());
     }
 }

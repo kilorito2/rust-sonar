@@ -4,7 +4,7 @@ use super::SonarApp;
 use super::icons;
 use super::theme::{self, *};
 use super::widgets::{self, card, primary_button, secondary_button, section_header};
-use crate::config::{Channel, MuteTarget, OverlayCorner, Settings};
+use crate::config::{Channel, HotkeyAction, MuteTarget, OverlayCorner, Settings};
 use crate::hotkeys;
 use crate::state::DeviceInfo;
 use crate::virtual_devices::{self as vdev, Role};
@@ -232,7 +232,7 @@ impl SonarApp {
 impl SonarApp {
     /// Empieza (Some) o termina (None) de grabar el atajo de una acción. Mientras se graba, el motor
     /// suelta los atajos registrados: si no, pulsar uno ya en uso silenciaría en vez de grabarse.
-    fn set_capturing(&mut self, t: Option<MuteTarget>, port: u16) {
+    fn set_capturing(&mut self, t: Option<HotkeyAction>, port: u16) {
         if self.capturing.is_some() != t.is_some() {
             super::client::pause_hotkeys(port, t.is_some());
         }
@@ -289,22 +289,36 @@ impl SonarApp {
                 ui,
                 icons::KEYBOARD,
                 tr!("Atajos de teclado", "Keyboard shortcuts"),
-                Some(tr!("Silencian o activan desde cualquier programa, también en juegos y con la ventana cerrada", "Mute or unmute from any program, in games too and with the window closed")),
+                Some(tr!("Silencian o cambian el volumen desde cualquier programa, también en juegos y con la ventana cerrada", "Mute or change the volume from any program, in games too and with the window closed")),
             );
+            let actions: Vec<HotkeyAction> = HotkeyAction::all().filter(|a| s.streamer.enabled || !a.streamer_only()).collect();
             egui::Grid::new("hotkeys").num_columns(3).spacing([16.0, 8.0]).show(ui, |ui| {
-                for t in MuteTarget::ALL {
+                for t in actions {
                     let (icon, color) = match t {
-                        MuteTarget::Mic => (icons::MICROPHONE, MIC),
-                        MuteTarget::Master => (icons::HEADPHONES, MASTER),
-                        MuteTarget::Channel(ch) => (theme::channel_icon(ch), channel_color(ch)),
+                        HotkeyAction::Mute(MuteTarget::Mic) => (icons::MICROPHONE, MIC),
+                        HotkeyAction::Mute(MuteTarget::Master) => (icons::HEADPHONES, MASTER),
+                        HotkeyAction::Mute(MuteTarget::Channel(ch)) => (theme::channel_icon(ch), channel_color(ch)),
+                        HotkeyAction::Mute(MuteTarget::Stream) => (icons::BROADCAST, STREAM),
+                        HotkeyAction::Volume { stream: false, up } => (if up { icons::SPEAKER_UP } else { icons::SPEAKER_DOWN }, MASTER),
+                        HotkeyAction::Volume { stream: true, up } => (if up { icons::SPEAKER_UP } else { icons::SPEAKER_DOWN }, STREAM),
                     };
                     ui.horizontal(|ui| {
                         widgets::badge_icon(ui, icon, color, 26.0);
-                        ui.allocate_ui_with_layout(egui::vec2(150.0, 22.0), Layout::left_to_right(Align::Center), |ui| {
+                        ui.allocate_ui_with_layout(egui::vec2(190.0, 22.0), Layout::left_to_right(Align::Center), |ui| {
+                            // Con el modo streamer, el Master es la mezcla personal.
+                            let personal = s.streamer.enabled;
                             let text = match t {
-                                MuteTarget::Mic => tr!("Silenciar micrófono", "Mute microphone").to_string(),
-                                MuteTarget::Master => tr!("Silenciar todas las salidas", "Mute all outputs").to_string(),
-                                MuteTarget::Channel(ch) => trf!("Silenciar {}", "Mute {}", ch.label()),
+                                HotkeyAction::Mute(MuteTarget::Mic) => tr!("Silenciar micrófono", "Mute microphone").to_string(),
+                                HotkeyAction::Mute(MuteTarget::Master) if personal => tr!("Silenciar la mezcla personal", "Mute the personal mix").to_string(),
+                                HotkeyAction::Mute(MuteTarget::Master) => tr!("Silenciar todas las salidas", "Mute all outputs").to_string(),
+                                HotkeyAction::Mute(MuteTarget::Channel(ch)) => trf!("Silenciar {}", "Mute {}", ch.label()),
+                                HotkeyAction::Mute(MuteTarget::Stream) => tr!("Silenciar la retransmisión", "Mute the stream").to_string(),
+                                HotkeyAction::Volume { stream: false, up: false } if personal => tr!("Bajar volumen personal", "Personal volume down").to_string(),
+                                HotkeyAction::Volume { stream: false, up: true } if personal => tr!("Subir volumen personal", "Personal volume up").to_string(),
+                                HotkeyAction::Volume { stream: false, up: false } => tr!("Bajar volumen general", "Overall volume down").to_string(),
+                                HotkeyAction::Volume { stream: false, up: true } => tr!("Subir volumen general", "Overall volume up").to_string(),
+                                HotkeyAction::Volume { stream: true, up: false } => tr!("Bajar volumen de retransmisión", "Stream volume down").to_string(),
+                                HotkeyAction::Volume { stream: true, up: true } => tr!("Subir volumen de retransmisión", "Stream volume up").to_string(),
                             };
                             ui.label(RichText::new(text).font(medium(13.5)));
                         });
@@ -473,6 +487,8 @@ fn api_card(ui: &mut Ui, s: &Settings) {
                     ("PUT", "/api/apps/discord".into(), r#"{"channel":"chat"}"#),
                     ("POST", "/api/channels/mic/eq/preset/Voz clara".into(), ""),
                     ("PATCH", "/api/mic".into(), r#"{"muted":true}"#),
+                    ("PATCH", "/api/streamer".into(), r#"{"enabled":true,"volume":0.8}"#),
+                    ("PATCH", "/api/streamer/channels/media".into(), r#"{"muted":true}"#),
                 ] {
                     ui.horizontal(|ui| {
                         let color = match method {

@@ -2,7 +2,8 @@
 //!
 //! ```text
 //! micro ─► ganancia ─► RNNoise (supresión + VAD) ─► puerta por voz ─► puerta por nivel ─► EQ ─► compresor ─► volumen ─┬─► cable virtual
-//!                                                                                                              └─► escucha (auriculares)
+//!                                                                                                              ├─► escucha (auriculares)
+//!                                                                                                              └─► retransmisión (modo streamer)
 //! ```
 //!
 //! La salida va a un dispositivo de reproducción (p. ej. "CABLE Input" de VB-Cable); en Discord se elige
@@ -104,6 +105,7 @@ fn supervisor(shared: Arc<Shared>) {
         let _ = cap.join();
         let _ = out.join();
         shared.monitor.clear();
+        shared.stream_mic.clear();
         thread::sleep(Duration::from_millis(300));
     }
 }
@@ -135,6 +137,7 @@ fn capture_chain(shared: &Shared, stop: &AtomicBool, fifo: &Fifo, device: Option
 
     let mut proc = MicProcessor::new();
     let mut version = 0;
+    let mut to_stream = false;
     let mut scratch = Vec::new();
     let mut pending: Vec<f32> = Vec::with_capacity(FRAME * 2);
 
@@ -143,6 +146,7 @@ fn capture_chain(shared: &Shared, stop: &AtomicBool, fifo: &Fifo, device: Option
         if v != version {
             if let Some(s) = shared.settings.try_read() {
                 proc.configure(&s.mic);
+                to_stream = s.stream_mic_gain() > 0.0;
                 version = v;
             }
         }
@@ -161,6 +165,9 @@ fn capture_chain(shared: &Shared, stop: &AtomicBool, fifo: &Fifo, device: Option
             fifo.push(&frame);
             if proc.cfg.monitor {
                 shared.monitor.push(&frame);
+            }
+            if to_stream {
+                shared.stream_mic.push(&frame);
             }
         }
     }

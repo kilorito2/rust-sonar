@@ -6,6 +6,9 @@
 //! - **Un canal**: su configuración completa (volumen, ecualizador, audio espacial, volumen
 //!   inteligente y ganancia). La rueda de cada tira lleva aquí.
 //! - **Micrófono**: la vista del micro (`mic.rs`).
+//!
+//! En modo streamer cada tira lleva dos faders, como en Sonar: la mezcla personal (auriculares) y
+//! la de retransmisión (lo que oye el público). El Master elige además por dónde sale cada mezcla.
 
 use super::eq_editor::{eq_editor, preset_combo};
 use super::icons;
@@ -25,6 +28,8 @@ const FADER_MIN: f32 = 120.0;
 const FADER_MAX: f32 = 280.0;
 /// Alto de una tira sin contar el fader (cabecera, preset, origen, valor, apps) más el ChatMix.
 const STRIP_FIXED_H: f32 = 478.0;
+/// Lo que añade el par de faders del modo streamer (icono de la mezcla y su punto).
+const DUAL_EXTRA_H: f32 = 30.0;
 
 impl SonarApp {
     pub(super) fn mixer_view(&mut self, ui: &mut Ui, s: &mut Settings) {
@@ -45,6 +50,22 @@ impl SonarApp {
         let outputs = self.shared.devices.read().outputs.clone();
         let peaks = [meters.game, meters.chat, meters.media, meters.aux];
         let keys = ["game", "chat", "media", "aux"];
+        let stream_keys = ["stream_game", "stream_chat", "stream_media", "stream_aux"];
+        let streamer = s.streamer.enabled;
+        let inputs = self.shared.devices.read().inputs.clone();
+        let stream_status = self.shared.status.read().stream.clone();
+        if streamer && s.streamer.device.is_none() {
+            widgets::notice(
+                ui,
+                icons::BROADCAST,
+                STREAM,
+                tr!(
+                    "Modo streamer: elige en la tira Master la salida de la retransmisión. Lo normal es un cable virtual libre (p. ej. «CABLE Input») y, en OBS, su pareja como fuente de audio («CABLE Output»).",
+                    "Streamer mode: pick the stream output in the Master strip. Usually a free virtual cable (e.g. “CABLE Input”) and, in OBS, its pair as an audio source (“CABLE Output”)."
+                ),
+            );
+            ui.add_space(8.0);
+        }
         let device_name = |id: &Option<String>| -> Option<String> {
             // Un dispositivo configurado que ya no existe no se muestra: el canal captura por app.
             id.as_ref().and_then(|id| outputs.iter().find(|d| &d.id == id).map(|d| d.name.clone()))
@@ -52,22 +73,28 @@ impl SonarApp {
 
         // Cada tarjeta suma su margen y 1 px de borde por lado.
         let strip_w = ((ui.available_width() - 5.0 * GAP - 2.0) / 6.0 - 2.0 * (STRIP_PAD + 1.0)).clamp(STRIP_MIN, STRIP_MAX);
-        let fader_h = (self.content_h - STRIP_FIXED_H).clamp(FADER_MIN, FADER_MAX);
+        let fader_h = (self.content_h - STRIP_FIXED_H - if streamer { DUAL_EXTRA_H } else { 0.0 }).clamp(FADER_MIN, FADER_MAX);
         let mut moved: Option<(String, Channel)> = None;
         let mut open: Option<Tab> = None;
         egui::ScrollArea::horizontal().id_salt("strips").auto_shrink([false, true]).show(ui, |ui| {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = GAP;
                 let level = self.meter_level("master", meters.master);
-                let out_name = device_name(&s.output_device).unwrap_or_else(|| tr!("Predeterminado", "Default").into());
-                master_strip(ui, strip_w, fader_h, level, s, &out_name);
+                if streamer {
+                    let stream_level = self.meter_level("stream", meters.stream);
+                    master_strip_streamer(ui, strip_w, fader_h, [level, stream_level], s, &outputs, &inputs, &stream_status);
+                } else {
+                    let out_name = device_name(&s.output_device).unwrap_or_else(|| tr!("Predeterminado", "Default").into());
+                    master_strip(ui, strip_w, fader_h, level, s, &out_name);
+                }
 
                 for ch in Channel::ALL {
                     let level = self.meter_level(keys[ch.index()], peaks[ch.index()]);
+                    let stream_level = self.meter_level(stream_keys[ch.index()], meters.stream_channels[ch.index()]);
                     let mine: Vec<&AppInfo> = apps.iter().filter(|a| a.channel == ch).collect();
                     let t = EqTarget::Channel(ch);
                     let source = device_name(&s.channel(ch).device);
-                    let r = strip(ui, strip_w, fader_h, t, level, s, Some(&mine), source.as_deref());
+                    let r = strip(ui, strip_w, fader_h, t, [level, stream_level], s, Some(&mine), source.as_deref());
                     if r.open {
                         open = Some(Tab::Channel(ch));
                     }
@@ -78,7 +105,7 @@ impl SonarApp {
 
                 let level = self.meter_level("mic", meters.mic_out);
                 let source = device_name(&s.mic.output_device);
-                if strip(ui, strip_w, fader_h, EqTarget::Mic, level, s, None, source.as_deref()).open {
+                if strip(ui, strip_w, fader_h, EqTarget::Mic, [level, level], s, None, source.as_deref()).open {
                     open = Some(Tab::Mic);
                 }
             });
@@ -167,10 +194,31 @@ fn channel_header(ui: &mut Ui, s: &mut Settings, ch: Channel, level: f32, source
                 ui.label(RichText::new(icon).font(theme::icon(13.0)).color(TEXT_3));
             });
         });
+        if s.streamer.enabled {
+            ui.add_space(8.0);
+            stream_send_row(ui, &mut s.streamer.channels[ch.index()]);
+        }
         ui.add_space(10.0);
         dropped = app_chips(ui, apps, color);
     });
     dropped
+}
+
+/// Fila del envío a la retransmisión en la cabecera de la pestaña de un canal (modo streamer).
+fn stream_send_row(ui: &mut Ui, send: &mut crate::config::StreamSend) {
+    ui.horizontal(|ui| {
+        ui.add_space(4.0);
+        ui.label(RichText::new(icons::BROADCAST).font(theme::icon(17.0)).color(STREAM));
+        ui.label(RichText::new(tr!("Retransmisión", "Stream")).font(medium(13.5)).color(TEXT_2));
+        let icon = if send.muted { icons::SPEAKER_OFF } else { icons::SPEAKER };
+        if icon_button(ui, icon, if send.muted { tr!("Mandarlo a la retransmisión", "Send it to the stream") } else { tr!("Quitarlo de la retransmisión", "Remove it from the stream") }, send.muted, DANGER).clicked() {
+            send.muted = !send.muted;
+        }
+        ui.spacing_mut().slider_width = (ui.available_width() - 120.0).clamp(100.0, 420.0);
+        ui.add(egui::Slider::new(&mut send.volume, 0.0..=1.0).show_value(false)).on_hover_text(tr!("Volumen del canal en la retransmisión (lo que oye tu público)", "Channel volume in the stream (what your audience hears)"));
+        let txt = if send.muted { tr!("Fuera", "Off").to_string() } else { format!("{:.0} %", send.volume * 100.0) };
+        ui.label(RichText::new(txt).font(semibold(14.0)).color(if send.muted { DANGER } else { TEXT }));
+    });
 }
 
 /// Apps del canal en fila (pestaña de canal). También acepta apps soltadas.
@@ -373,6 +421,123 @@ fn fader_block(ui: &mut Ui, height: f32, level: f32, color: Color32, volume: &mu
     });
 }
 
+/// Un fader del par del modo streamer: a qué mezcla va, su vúmetro y su valor.
+struct FaderCol<'a> {
+    icon: &'a str,
+    tip: &'a str,
+    level: f32,
+    volume: &'a mut f32,
+    muted: &'a mut bool,
+}
+
+/// Dos faders lado a lado (personal y retransmisión). Encima de cada uno, el icono de su mezcla y un
+/// punto verde si el canal suena en ella; clic en el icono = quitarlo o ponerlo, como en Sonar.
+fn dual_fader_block(ui: &mut Ui, height: f32, color: Color32, cols: [FaderCol; 2]) {
+    ui.add_space(10.0);
+    let gap = 6.0;
+    let col_w = ((ui.available_width() - gap) / 2.0).floor();
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = gap;
+        for col in cols {
+            ui.allocate_ui_with_layout(vec2(col_w, 0.0), Layout::top_down(Align::Center), |ui| {
+                ui.set_width(col_w);
+                ui.spacing_mut().item_spacing.y = 4.0;
+                let on = !*col.muted;
+                let icon = ui.add(egui::Label::new(RichText::new(col.icon).font(theme::icon(17.0)).color(if on { TEXT } else { TEXT_3 })).sense(Sense::click()));
+                if icon.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if icon.on_hover_text(col.tip).clicked() {
+                    *col.muted = !*col.muted;
+                }
+                let (dot, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
+                ui.painter().circle_filled(dot.center(), 3.5, if on { OK } else { BORDER_STRONG });
+                ui.horizontal(|ui| {
+                    let w = ui.available_width();
+                    ui.add_space(((w - 46.0) / 2.0).max(0.0));
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    vmeter(ui, if on { col.level } else { 0.0 }, height);
+                    fader(ui, col.volume, color, height, !on).on_hover_text(col.tip);
+                });
+                let (txt, font, c) = if on { (format!("{:.0}%", *col.volume * 100.0), semibold(15.0), TEXT) } else { (tr!("Mudo", "Muted").to_string(), medium(12.0), DANGER) };
+                ui.label(RichText::new(txt).font(font).color(c));
+                let icon = if on { icons::SPEAKER } else { icons::SPEAKER_OFF };
+                if icon_button(ui, icon, if on { tr!("Silenciar", "Mute") } else { tr!("Activar sonido", "Unmute") }, !on, DANGER).clicked() {
+                    *col.muted = !*col.muted;
+                }
+            });
+        }
+    });
+}
+
+const PERSONAL_TIP: (&str, &str) = ("Mezcla personal: lo que oyes tú", "Personal mix: what you hear");
+const STREAM_TIP: (&str, &str) = ("Mezcla de retransmisión: lo que oye tu público", "Stream mix: what your audience hears");
+
+fn tip(t: (&'static str, &'static str)) -> &'static str {
+    if crate::i18n::en() { t.1 } else { t.0 }
+}
+
+/// Master en modo streamer: los dos volúmenes generales y por dónde sale cada mezcla.
+#[allow(clippy::too_many_arguments)]
+fn master_strip_streamer(
+    ui: &mut Ui,
+    width: f32,
+    fader_h: f32,
+    levels: [f32; 2],
+    s: &mut Settings,
+    outputs: &[crate::state::DeviceInfo],
+    inputs: &[crate::state::DeviceInfo],
+    stream_status: &str,
+) {
+    card_with_margin(ui, Some(MASTER), false, STRIP_PAD as i8, |ui| {
+        ui.set_width(width);
+        strip_header(ui, icons::HEADPHONES, "Master", MASTER, false);
+        ui.add_space(4.0);
+        ui.add_sized([width, 32.0], egui::Label::new(RichText::new(tr!("Personal · Retransmisión", "Personal · Stream")).size(11.5).color(TEXT_3)));
+        ui.add_space(2.0);
+        match s.streamer.device.as_ref().and_then(|id| outputs.iter().find(|d| &d.id == id)) {
+            Some(d) => source_line(ui, icons::BROADCAST, d.name.split(" (").next().unwrap_or(&d.name), &d.name),
+            None => source_line(ui, icons::WARNING, tr!("Sin salida de retransmisión", "No stream output"), tr!("Elígela abajo, en «Salida de retransmisión»", "Pick it below, under “Stream output”")),
+        }
+        let (mut pv, mut pm, mut sv, mut sm) = (s.master_volume, s.master_muted, s.streamer.volume, s.streamer.muted);
+        dual_fader_block(
+            ui,
+            fader_h,
+            MASTER,
+            [
+                FaderCol { icon: icons::HEADPHONES, tip: tip(PERSONAL_TIP), level: levels[0], volume: &mut pv, muted: &mut pm },
+                FaderCol { icon: icons::BROADCAST, tip: tip(STREAM_TIP), level: levels[1], volume: &mut sv, muted: &mut sm },
+            ],
+        );
+        (s.master_volume, s.master_muted, s.streamer.volume, s.streamer.muted) = (pv, pm, sv, sm);
+
+        // La salida personal (auriculares) está en la barra de arriba y el micro en su pestaña: aquí
+        // solo hace falta la de la retransmisión.
+        ui.add_space(8.0);
+        widgets::caption(ui, tr!("Salida de retransmisión", "Stream output"));
+        let combo_w = width - 8.0;
+        // Cualquier salida menos las que ya tienen función (canales, micro, silenciosa, auriculares).
+        let taken: Vec<String> = s.virtual_device_ids().into_iter().filter(|id| Some(id) != s.streamer.device.as_ref()).chain(s.output_device.clone()).collect();
+        let free: Vec<crate::state::DeviceInfo> = outputs.iter().filter(|d| !taken.contains(&d.id)).cloned().collect();
+        widgets::device_combo(ui, "streamer_out", icons::BROADCAST, &mut s.streamer.device, &free, tr!("Sin asignar", "Unassigned"), combo_w);
+        // Cómo cogerla en OBS: un cable virtual se captura por su entrada; cualquier otra salida, con
+        // «Captura de salida de audio».
+        if let Some(dev) = s.streamer.device.as_ref().and_then(|id| outputs.iter().find(|d| &d.id == id)) {
+            let (name, how) = match crate::virtual_devices::paired_input(dev, inputs) {
+                Some(pair) => (&pair.name, tr!("Añádelo en OBS como «Captura de entrada de audio»", "Add it in OBS as an “Audio Input Capture”")),
+                None => (&dev.name, tr!("Añádelo en OBS como «Captura de salida de audio»", "Add it in OBS as an “Audio Output Capture”")),
+            };
+            let short = name.split(" (").next().unwrap_or(name);
+            widgets::truncated(ui, RichText::new(trf!("En OBS: «{short}»", "In OBS: “{short}”")).size(11.0).color(STREAM)).on_hover_text(format!("{how}
+{name}"));
+        }
+        if !stream_status.is_empty() {
+            ui.add_space(4.0);
+            widgets::truncated(ui, RichText::new(stream_status).size(11.0).color(TEXT_3)).on_hover_text(stream_status);
+        }
+    });
+}
+
 fn master_strip(ui: &mut Ui, width: f32, fader_h: f32, level: f32, s: &mut Settings, output: &str) {
     card_with_margin(ui, Some(MASTER), false, STRIP_PAD as i8, |ui| {
         ui.set_width(width);
@@ -394,11 +559,12 @@ fn strip(
     width: f32,
     fader_h: f32,
     t: EqTarget,
-    level: f32,
+    levels: [f32; 2],
     s: &mut Settings,
     apps: Option<&[&AppInfo]>,
     source: Option<&str>,
 ) -> StripResult {
+    let level = levels[0];
     let color = target_color(t);
     let mut result = StripResult { open: false, dropped: None };
 
@@ -415,21 +581,54 @@ fn strip(
             (None, _) => source_line(ui, icons::WAVEFORM, tr!("Por aplicación", "Per app"), tr!("Sin dispositivo virtual: se captura cada app", "No virtual device: each app is captured separately")),
         }
 
-        let (mut volume, mut muted) = match t {
-            EqTarget::Channel(ch) => (s.channel(ch).volume, s.channel(ch).muted),
-            EqTarget::Mic => (s.mic.volume, s.mic.muted),
-        };
-        let mute_icons = if t == EqTarget::Mic { (icons::MICROPHONE_OFF, icons::MICROPHONE) } else { (icons::SPEAKER_OFF, icons::SPEAKER) };
-        fader_block(ui, fader_h, level, color, &mut volume, &mut muted, mute_icons);
-        match t {
-            EqTarget::Channel(ch) => {
-                let c = s.channel_mut(ch);
-                c.volume = volume;
-                c.muted = muted;
+        if s.streamer.enabled {
+            // Personal y retransmisión. En el micro, lo personal es escucharte a ti mismo; su volumen
+            // principal (el que oyen Discord y compañía) sigue en la pestaña Micrófono.
+            let (mut pv, mut pm, send) = match t {
+                EqTarget::Channel(ch) => (s.channel(ch).volume, s.channel(ch).muted, s.streamer.channels[ch.index()]),
+                EqTarget::Mic => (s.mic.monitor_volume, !s.mic.monitor, s.streamer.mic),
+            };
+            let (mut sv, mut sm) = (send.volume, send.muted);
+            let personal_tip = if t == EqTarget::Mic { tr!("Escucharme: oírte en tus auriculares", "Hear myself: listen to yourself in your headphones") } else { tip(PERSONAL_TIP) };
+            // El micro solo suena en cada mezcla si está procesándose.
+            let mic_level = |on: bool| if t != EqTarget::Mic || on { 1.0 } else { 0.0 };
+            dual_fader_block(
+                ui,
+                fader_h,
+                color,
+                [
+                    FaderCol { icon: icons::HEADPHONES, tip: personal_tip, level: level * mic_level(s.mic.monitor), volume: &mut pv, muted: &mut pm },
+                    FaderCol { icon: icons::BROADCAST, tip: tip(STREAM_TIP), level: levels[1] * mic_level(s.stream_mic_gain() > 0.0), volume: &mut sv, muted: &mut sm },
+                ],
+            );
+            match t {
+                EqTarget::Channel(ch) => {
+                    let c = s.channel_mut(ch);
+                    (c.volume, c.muted) = (pv, pm);
+                    s.streamer.channels[ch.index()] = crate::config::StreamSend { volume: sv, muted: sm };
+                }
+                EqTarget::Mic => {
+                    (s.mic.monitor_volume, s.mic.monitor) = (pv, !pm);
+                    s.streamer.mic = crate::config::StreamSend { volume: sv, muted: sm };
+                }
             }
-            EqTarget::Mic => {
-                s.mic.volume = volume;
-                s.mic.muted = muted;
+        } else {
+            let (mut volume, mut muted) = match t {
+                EqTarget::Channel(ch) => (s.channel(ch).volume, s.channel(ch).muted),
+                EqTarget::Mic => (s.mic.volume, s.mic.muted),
+            };
+            let mute_icons = if t == EqTarget::Mic { (icons::MICROPHONE_OFF, icons::MICROPHONE) } else { (icons::SPEAKER_OFF, icons::SPEAKER) };
+            fader_block(ui, fader_h, level, color, &mut volume, &mut muted, mute_icons);
+            match t {
+                EqTarget::Channel(ch) => {
+                    let c = s.channel_mut(ch);
+                    c.volume = volume;
+                    c.muted = muted;
+                }
+                EqTarget::Mic => {
+                    s.mic.volume = volume;
+                    s.mic.muted = muted;
+                }
             }
         }
 

@@ -39,6 +39,8 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/api/channels/{ch}/eq", put(set_eq))
         .route("/api/channels/{ch}/eq/preset/{name}", post(set_eq_preset))
         .route("/api/mic", patch(patch_mic))
+        .route("/api/streamer", patch(patch_streamer))
+        .route("/api/streamer/channels/{ch}", patch(patch_stream_send))
         .route("/api/setup", post(auto_setup))
         .route("/api/devices/tidy", post(tidy_devices))
         .route("/api/devices/show-hidden", post(show_hidden_devices))
@@ -361,4 +363,45 @@ async fn patch_mic(State(sh): State<AppState>, Json(b): Json<MicPatch>) -> ApiRe
         if let Some(v) = b.monitor_volume { m.monitor_volume = v.clamp(0.0, 1.0) }
     });
     Ok(Json(full_state(&sh)))
+}
+
+#[derive(Deserialize)]
+struct StreamerPatch {
+    enabled: Option<bool>,
+    volume: Option<f32>,
+    muted: Option<bool>,
+    /// ID del dispositivo de salida de la retransmisión ("" = sin asignar).
+    device: Option<String>,
+}
+
+/// PATCH /api/streamer {"enabled":true,"volume":0.8,"muted":false}
+async fn patch_streamer(State(sh): State<AppState>, Json(b): Json<StreamerPatch>) -> ApiResult {
+    if let Some(id) = b.device.as_ref().filter(|id| !id.is_empty()) {
+        if !sh.devices.read().outputs.iter().any(|d| &d.id == id) {
+            return Err((StatusCode::NOT_FOUND, trf!("no existe la salida {id} (mira GET /api/devices)", "no output {id} (see GET /api/devices)")));
+        }
+    }
+    sh.update(|s| {
+        let st = &mut s.streamer;
+        if let Some(v) = b.enabled { st.enabled = v }
+        if let Some(v) = b.volume { st.volume = v.clamp(0.0, 1.0) }
+        if let Some(v) = b.muted { st.muted = v }
+        if let Some(v) = b.device { st.device = (!v.is_empty()).then_some(v) }
+    });
+    Ok(Json(json!(sh.settings.read().streamer)))
+}
+
+/// PATCH /api/streamer/channels/{game|chat|media|aux|mic} {"volume":0.5,"muted":false}: lo que manda
+/// ese canal (o el micro) a la retransmisión.
+async fn patch_stream_send(State(sh): State<AppState>, Path(ch): Path<String>, Json(b): Json<ChannelPatch>) -> ApiResult {
+    let target = EqTarget::parse(&ch).ok_or((StatusCode::NOT_FOUND, trf!("canal desconocido: {ch} (game|chat|media|aux|mic)", "unknown channel: {ch} (game|chat|media|aux|mic)")))?;
+    sh.update(|s| {
+        let send = match target {
+            EqTarget::Channel(c) => &mut s.streamer.channels[c.index()],
+            EqTarget::Mic => &mut s.streamer.mic,
+        };
+        if let Some(v) = b.volume { send.volume = v.clamp(0.0, 1.0) }
+        if let Some(v) = b.muted { send.muted = v }
+    });
+    Ok(Json(json!(sh.settings.read().streamer)))
 }

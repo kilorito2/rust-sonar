@@ -11,7 +11,7 @@
 //!
 //! Solo hay temporizadores mientras el aviso está a la vista: en reposo no gasta nada.
 
-use crate::config::{Hotkeys, MuteTarget, OverlayCorner, Settings};
+use crate::config::{HotkeyAction, Hotkeys, MuteTarget, OverlayCorner, Settings};
 use crate::hotkeys;
 use crate::state::Shared;
 use crate::ui::{icons, theme};
@@ -41,9 +41,9 @@ static SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
 #[derive(Default)]
 struct State {
     /// Lo silenciado la última vez que se miró, para saber qué ha cambiado.
-    mutes: [bool; 6],
-    /// Atajos registrados ahora mismo (None = ninguno).
-    registered: Option<Hotkeys>,
+    mutes: [bool; 7],
+    /// Atajos registrados ahora mismo y si incluían los del modo streamer (None = ninguno).
+    registered: Option<(Hotkeys, bool)>,
     /// La ventana está grabando un atajo: los registrados se sueltan para que la tecla le llegue.
     paused: bool,
     alpha: u8,
@@ -117,13 +117,10 @@ unsafe fn run() -> windows::core::Result<()> {
 
         // Estado de partida: lo que ya está silenciado al arrancar no se anuncia.
         if let Some(shared) = SHARED.get() {
-            let (mutes, keys) = {
-                let s = shared.settings.read();
-                (MuteTarget::ALL.map(|t| t.is_muted(&s)), s.hotkeys.clone())
-            };
+            let s = shared.settings.read().clone();
             STATE.with_borrow_mut(|st| {
-                st.mutes = mutes;
-                sync_hotkeys(hwnd, st, &keys, shared);
+                st.mutes = MuteTarget::ALL.map(|t| t.is_muted(&s));
+                sync_hotkeys(hwnd, st, &s, shared);
             });
         }
 
@@ -139,9 +136,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     let Some(shared) = SHARED.get() else { return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) } };
     match msg {
         WM_HOTKEY => {
-            if let Some(&t) = MuteTarget::ALL.get(wparam.0.wrapping_sub(1)) {
-                // El aviso sale solo: update() → changed() → WM_CHANGED.
-                shared.update(|s| t.toggle(s));
+            if let Some(a) = HotkeyAction::from_id(wparam.0 as i32) {
+                // Los silencios se anuncian solos (update() → changed() → WM_CHANGED); los cambios de
+                // volumen, aquí.
+                if let Some(t) = shared.update(|s| a.run(s)) {
+                    let s = shared.settings.read().clone();
+                    if s.overlay.enabled {
+                        show(hwnd, t, &s, true);
+                    }
+                }
             }
         }
         WM_CHANGED => on_changed(hwnd, shared),
@@ -151,13 +154,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 unregister_all(hwnd);
                 st.registered = None;
             } else {
-                let keys = shared.settings.read().hotkeys.clone();
-                sync_hotkeys(hwnd, st, &keys, shared);
+                let s = shared.settings.read().clone();
+                sync_hotkeys(hwnd, st, &s, shared);
             }
         }),
         WM_PREVIEW => {
             let s = shared.settings.read().clone();
-            show(hwnd, MuteTarget::Mic, &s);
+            show(hwnd, MuteTarget::Mic, &s, false);
         }
         WM_TIMER => unsafe { on_timer(hwnd, wparam.0) },
         _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
@@ -171,42 +174,44 @@ fn on_changed(hwnd: HWND, shared: &Shared) {
     let flipped = STATE.with_borrow_mut(|st| {
         let flipped = MuteTarget::ALL.into_iter().find(|t| st.mutes[t.index()] != mutes[t.index()]);
         st.mutes = mutes;
-        sync_hotkeys(hwnd, st, &s.hotkeys, shared);
+        sync_hotkeys(hwnd, st, &s, shared);
         flipped
     });
     if let Some(t) = flipped
         && s.overlay.enabled
     {
-        show(hwnd, t, &s);
+        show(hwnd, t, &s, false);
     }
 }
 
 fn unregister_all(hwnd: HWND) {
-    for t in MuteTarget::ALL {
+    for a in HotkeyAction::all() {
         unsafe {
-            let _ = UnregisterHotKey(Some(hwnd), t.index() as i32 + 1);
+            let _ = UnregisterHotKey(Some(hwnd), a.id());
         }
     }
 }
 
-/// Registra los atajos si han cambiado. Los que Windows no deja registrar (otro programa ya usa esa
-/// combinación) se apuntan en el estado para que la ventana lo avise.
-fn sync_hotkeys(hwnd: HWND, st: &mut State, keys: &Hotkeys, shared: &Shared) {
-    if st.paused || st.registered.as_ref() == Some(keys) {
+/// Registra los atajos si han cambiado. Los del modo streamer, solo con el modo activado (si no, se
+/// quedarían esas combinaciones para nada). Los que Windows no deja registrar (otro programa ya usa
+/// esa combinación) se apuntan en el estado para que la ventana lo avise.
+fn sync_hotkeys(hwnd: HWND, st: &mut State, s: &Settings, shared: &Shared) {
+    let wanted = (s.hotkeys.clone(), s.streamer.enabled);
+    if st.paused || st.registered.as_ref() == Some(&wanted) {
         return;
     }
     unregister_all(hwnd);
     let mut failed = Vec::new();
-    for t in MuteTarget::ALL {
-        let Some(h) = keys.get(t) else { continue };
+    for a in HotkeyAction::all().filter(|a| s.streamer.enabled || !a.streamer_only()) {
+        let Some(h) = s.hotkeys.get(a) else { continue };
         let ok = hotkeys::find(&h.key)
-            .is_some_and(|def| unsafe { RegisterHotKey(Some(hwnd), t.index() as i32 + 1, HOT_KEY_MODIFIERS(hotkeys::modifiers(h)), def.vk).is_ok() });
+            .is_some_and(|def| unsafe { RegisterHotKey(Some(hwnd), a.id(), HOT_KEY_MODIFIERS(hotkeys::modifiers(h)), def.vk).is_ok() });
         if !ok {
-            failed.push(t);
+            failed.push(a);
         }
     }
     shared.status.write().hotkey_conflicts = failed;
-    st.registered = Some(keys.clone());
+    st.registered = Some(wanted);
 }
 
 unsafe fn on_timer(hwnd: HWND, id: usize) {
@@ -394,14 +399,16 @@ impl Drop for Painted {
     }
 }
 
-/// Dibuja el aviso de `t` a la escala `scale` (1.0 = 100 %).
-fn paint(t: MuteTarget, s: &Settings, scale: f32) -> Option<Painted> {
+/// Dibuja el aviso de `t` a la escala `scale` (1.0 = 100 %). Con `volume_change`, anuncia el volumen
+/// en vez del silencio.
+fn paint(t: MuteTarget, s: &Settings, scale: f32, volume_change: bool) -> Option<Painted> {
     let muted = t.is_muted(s);
     let volume = (t.volume(s).clamp(0.0, 1.0) * 100.0).round();
     let (icon, color) = match t {
         MuteTarget::Mic => (icons::MICROPHONE, theme::MIC),
         MuteTarget::Master => (icons::HEADPHONES, theme::MASTER),
         MuteTarget::Channel(ch) => (theme::channel_icon(ch), theme::channel_color(ch)),
+        MuteTarget::Stream => (icons::BROADCAST, theme::STREAM),
     };
     let (state_icon, state_color) = match (t, muted) {
         (MuteTarget::Mic, true) => (icons::MICROPHONE_OFF, theme::DANGER),
@@ -409,7 +416,11 @@ fn paint(t: MuteTarget, s: &Settings, scale: f32) -> Option<Painted> {
         (_, true) => (icons::SPEAKER_OFF, theme::DANGER),
         (_, false) => (icons::SPEAKER, theme::ACCENT),
     };
-    let title = if muted { tr!("Silenciado", "Muted") } else { tr!("Activado", "Unmuted") };
+    let title = match (volume_change, muted) {
+        (true, _) => tr!("Volumen", "Volume"),
+        (false, true) => tr!("Silenciado", "Muted"),
+        (false, false) => tr!("Activado", "Unmuted"),
+    };
 
     let k = |v: f32| v * scale;
     let (w, h) = (k(W).round() as i32, k(H).round() as i32);
@@ -493,9 +504,9 @@ fn paint(t: MuteTarget, s: &Settings, scale: f32) -> Option<Painted> {
 }
 
 /// Dibuja y muestra el aviso de `t` y programa que se desvanezca.
-fn show(hwnd: HWND, t: MuteTarget, s: &Settings) {
+fn show(hwnd: HWND, t: MuteTarget, s: &Settings, volume_change: bool) {
     let (area, scale) = placement();
-    let Some(painted) = paint(t, s, scale) else { return };
+    let Some(painted) = paint(t, s, scale, volume_change) else { return };
     let (w, h) = (painted.w, painted.h);
     unsafe {
         let corner = s.overlay.corner;
@@ -538,9 +549,15 @@ mod tests {
         let mut s = Settings::default();
         s.mic.muted = true;
         s.channel_mut(Channel::Chat).volume = 0.62;
-        for (name, t) in [("mic-silenciado", MuteTarget::Mic), ("todo-activado", MuteTarget::Master), ("chat-activado", MuteTarget::Channel(Channel::Chat))] {
+        s.streamer.volume = 0.45;
+        for (name, t, vol) in [
+            ("mic-silenciado", MuteTarget::Mic, false),
+            ("todo-activado", MuteTarget::Master, false),
+            ("chat-activado", MuteTarget::Channel(Channel::Chat), false),
+            ("retransmision-volumen", MuteTarget::Stream, true),
+        ] {
             for scale in [1.0f32, 1.5] {
-                let p = paint(t, &s, scale).expect("dibujar");
+                let p = paint(t, &s, scale, vol).expect("dibujar");
                 let px = unsafe { std::slice::from_raw_parts(p.bits, (p.w * p.h) as usize) };
                 // BMP de 32 bits de arriba abajo (las sondas lo convierten a PNG para mirarlo).
                 let mut f = Vec::new();

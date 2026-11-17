@@ -136,8 +136,8 @@ mod tests {
     #[test]
     fn default_hotkeys_are_known_keys() {
         let h = crate::config::Hotkeys::default();
-        for t in crate::config::MuteTarget::ALL {
-            if let Some(k) = h.get(t) {
+        for a in crate::config::HotkeyAction::all() {
+            if let Some(k) = h.get(a) {
                 assert!(find(&k.key).is_some(), "{}", k.key);
             }
         }
