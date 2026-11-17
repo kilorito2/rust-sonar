@@ -14,7 +14,7 @@ ecualizador paramétrico y micrófono con limpieza de voz por IA. Es una impleme
 cero, que no contiene ni traduce código de SteelSeries. Toda la interfaz está en **español e
 inglés**: sigue el idioma de Windows y se puede cambiar en *Ajustes → General → Idioma*.
 
-## Funciones
+## <a id="funciones" href="#funciones"><img src="../assets/readme/icons/sparkle.svg" width="26" height="26" align="top" alt=""></a> Funciones
 
 | Función | Cómo está hecha |
 |---|---|
@@ -34,7 +34,7 @@ inglés**: sigue el idioma de Windows y se puede cambiar en *Ajustes → General
 | API REST | `axum` en `127.0.0.1:7878` (Stream Deck, scripts, web). |
 | Idiomas | Español e inglés (`src/i18n.rs`, macros `tr!` y `trf!`). |
 
-## Consumo
+## <a id="consumo" href="#consumo"><img src="../assets/readme/icons/chart-bar.svg" width="26" height="26" align="top" alt=""></a> Consumo
 
 Motor y ventana van en procesos separados, los hilos duermen hasta que Windows avisa de algo y el
 audio (canales, salida y micro) solo se procesa cuando hace falta. Detalles en el
@@ -51,7 +51,7 @@ audio (canales, salida y micro) solo se procesa cuando hace falta. Detalles en e
 
 Medido en un Ryzen 5 4600G (12 hilos), 45 s por escenario. CPU = proceso + `audiodg`, en % del equipo.
 
-## Dispositivos virtuales
+## <a id="dispositivos-virtuales" href="#dispositivos-virtuales"><img src="../assets/readme/icons/plugs.svg" width="26" height="26" align="top" alt=""></a> Dispositivos virtuales
 
 Rust Sonar no instala un driver propio: un driver de kernel sin firma de Microsoft solo funciona
 con Windows en modo de prueba, que bloquea anti-cheats como Vanguard. Usa dispositivos virtuales
@@ -66,7 +66,7 @@ ya firmados y gratuitos de [vb-audio.com](https://vb-audio.com/Cable/):
 - **Sin ningún dispositivo virtual**: elige una «salida silenciosa» (una salida real que no
   escuches). Las apps suenan ahí y Rust Sonar las captura una a una y las mezcla en tus auriculares.
 
-## Uso
+## <a id="uso" href="#uso"><img src="../assets/readme/icons/rocket.svg" width="26" height="26" align="top" alt=""></a> Uso
 
 ```powershell
 cargo run --release
@@ -78,7 +78,7 @@ cargo test --release -- --ignored --nocapture   # sondas contra el hardware real
 2. *Ajustes → Dispositivos virtuales → Configurar automáticamente*.
 3. En Discord deja el micrófono en «Default» o elige «Rust Sonar - Micrófono».
 
-## Instalador
+## <a id="instalador" href="#instalador"><img src="../assets/readme/icons/package.svg" width="26" height="26" align="top" alt=""></a> Instalador
 
 `powershell -ExecutionPolicy Bypass -File installer\build.ps1` genera un instalador propio (Rust +
 egui por fuera, Inno Setup por dentro) que puede instalar también los drivers de VB-Audio.
@@ -88,7 +88,7 @@ egui por fuera, Inno Setup por dentro) que puede instalar también los drivers d
 > (`instaladores/` está en `.gitignore`). Para distribuir Rust Sonar hay que quitar la tarea
 > `drivers` de `installer/RustSonar.iss` o pedir permiso a VB-Audio.
 
-## Limitaciones conocidas
+## <a id="limitaciones-conocidas" href="#limitaciones-conocidas"><img src="../assets/readme/icons/warning.svg" width="26" height="26" align="top" alt=""></a> Limitaciones conocidas
 
 - Depende de dispositivos virtuales de terceros.
 - `IAudioPolicyConfigFactory` e `IPolicyConfig` no están documentadas: si Windows las cambia, el
