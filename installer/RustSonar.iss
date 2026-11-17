@@ -11,7 +11,7 @@
 ; tal cual) y se comprueba su SHA-256. Así el instalador se puede distribuir.
 
 #ifndef AppVersion
-  #define AppVersion "0.2.1"
+  #define AppVersion "0.2.2"
 #endif
 #define AppName "Rust Sonar"
 #define AppExe "rust_sonar.exe"
